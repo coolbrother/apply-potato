@@ -1,0 +1,16 @@
+{
+  "message_id": "test-email-003",
+  "subject": "Interview Invitation - Google Software Engineering Intern",
+  "sender": "Google Recruiter",
+  "sender_email": "recruiter@google.com",
+  "date": "2024-12-28T09:15:00",
+  "category": "Primary",
+  "body_text": "Hi,\n\nThank you for your interest in the Software Engineering Intern role at Google!\n\nI'm excited to invite you to a technical phone interview. The interview will be 45 minutes and will focus on coding and problem-solving.\n\nPlease use this link to schedule your interview: https://calendar.google.com/schedule/abc123\n\nAvailable slots:\n- January 8, 2025\n- January 10, 2025\n- January 12, 2025\n\nPlease confirm your availability within 3 business days.\n\nBest regards,\nSarah Chen\nGoogle University Recruiting",
+  "body_html": "<html><body><p>Hi,</p><p>I'm excited to invite you to a <strong>technical phone interview</strong> for the Software Engineering Intern role at Google.</p><p>Available slots: January 8, 10, or 12, 2025</p></body></html>",
+  "expected_classification": {
+    "category": "phone",
+    "company_candidates": ["Google"],
+    "position": "Software Engineering Intern",
+    "action_required": "Schedule interview within 3 business days"
+  }
+}

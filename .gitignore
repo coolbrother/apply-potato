@@ -1,0 +1,120 @@
+# ===========================================
+# ApplyPotato .gitignore
+# ===========================================
+
+# ===================
+# Sensitive Files (NEVER COMMIT)
+# ===================
+.env
+.env.local
+.env.*.local
+
+# Auth folder contains OAuth credentials and tokens
+# credentials.json - downloaded from Google Cloud Console
+# gmail_token.json, sheets_token.json - auto-generated on first OAuth
+auth/
+
+*.pem
+*.key
+secrets/
+
+# ===================
+# Python
+# ===================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv/
+
+# ===================
+# IDE / Editor
+# ===================
+.vscode/
+.idea/
+.claude/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+*.sublime-project
+*.sublime-workspace
+
+# ===================
+# OS Files
+# ===================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# ===================
+# Project Specific
+# ===================
+# Data directory (runtime data like processed_emails.json)
+data/
+
+# Tools directory (downloaded WinSW binary for Windows services)
+tools/
+
+# Log files
+logs/
+*.log
+
+# Scraped content (test output)
+scraped_content/
+
+# Extracted jobs (test output)
+extracted_jobs/
+
+# Session/temp files
+# (SESSION.md is tracked for development history)
+
+
+# ===================
+# Testing
+# ===================
+.coverage
+htmlcov/
+.tox/
+.pytest_cache/
+.mypy_cache/
+
+# ===================
+# Build
+# ===================
+*.manifest
+*.spec
+
+# ===================
+# Temporary Files
+# ===================
+temp/
+

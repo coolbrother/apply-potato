@@ -1,0 +1,16 @@
+{
+  "message_id": "test-email-004",
+  "subject": "Update on your application to RandomCorp",
+  "sender": "RandomCorp Talent",
+  "sender_email": "talent@randomcorp.com",
+  "date": "2024-12-26T16:45:00",
+  "category": "Primary",
+  "body_text": "Dear Applicant,\n\nThank you for taking the time to apply for the Software Engineering Intern position at RandomCorp.\n\nAfter careful consideration, we have decided to move forward with other candidates whose qualifications more closely match our current needs.\n\nWe encourage you to apply again in the future as new opportunities arise. We wish you the best of luck in your job search.\n\nSincerely,\nRandomCorp Talent Acquisition Team",
+  "body_html": "<html><body><p>Dear Applicant,</p><p>Thank you for applying to RandomCorp. After careful consideration, we have decided to move forward with other candidates.</p></body></html>",
+  "expected_classification": {
+    "category": "rejection",
+    "company_candidates": ["RandomCorp"],
+    "position": "Software Engineering Intern"
+  },
+  "notes": "This company is NOT in the test sheet, so no update should happen"
+}

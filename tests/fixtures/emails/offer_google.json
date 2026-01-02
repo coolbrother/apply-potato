@@ -1,0 +1,16 @@
+{
+  "message_id": "test-email-006",
+  "subject": "Congratulations! Offer for Software Engineering Intern at Google",
+  "sender": "Google Recruiter",
+  "sender_email": "recruiter@google.com",
+  "date": "2025-01-10T10:00:00",
+  "category": "Primary",
+  "body_text": "Dear Candidate,\n\nCongratulations! On behalf of Google, I am thrilled to extend an offer for the Software Engineering Intern position for Summer 2025.\n\nWe were impressed by your performance throughout our interview process and believe you would be a great addition to our team.\n\nOffer Details:\n- Position: Software Engineering Intern\n- Location: Mountain View, CA\n- Start Date: June 2, 2025\n- Duration: 12 weeks\n- Compensation: $60/hour + housing stipend\n\nPlease review the attached offer letter and respond within 2 weeks to confirm your acceptance.\n\nIf you have any questions, please don't hesitate to reach out.\n\nWe look forward to welcoming you to Google!\n\nBest regards,\nSarah Chen\nGoogle University Recruiting",
+  "body_html": "<html><body><p>Dear Candidate,</p><p><strong>Congratulations!</strong> On behalf of Google, I am thrilled to extend an offer for the <strong>Software Engineering Intern</strong> position for Summer 2025.</p><p>Offer Details:</p><ul><li>Position: Software Engineering Intern</li><li>Compensation: $60/hour + housing stipend</li></ul><p>Please respond within 2 weeks to confirm your acceptance.</p></body></html>",
+  "expected_classification": {
+    "category": "offer",
+    "company_candidates": ["Google"],
+    "position": "Software Engineering Intern",
+    "action_required": "Respond within 2 weeks"
+  }
+}

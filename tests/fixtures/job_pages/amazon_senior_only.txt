@@ -1,0 +1,26 @@
+SDE Intern - Summer 2025 (Seniors Only)
+Amazon
+
+Location: Seattle, WA
+Job Type: Internship
+Duration: Summer 2025 (12 weeks)
+Compensation: $60/hour + housing stipend
+
+Description
+Join Amazon as an SDE Intern and work on systems that serve millions of customers. This position is specifically for students in their final year of study.
+
+Basic Qualifications
+Must be a current Senior (final year undergraduate) or graduate student
+Expected graduation date between December 2025 and June 2026
+Currently enrolled in a Bachelor's or Master's program in Computer Science, Computer Engineering, or related technical field
+Programming experience in at least one modern language such as Java, Python, or C++
+
+Preferred Qualifications
+Previous technical internship experience
+Experience with distributed systems
+Strong communication skills
+
+Class Standing Requirement
+This position is only open to students who will be Seniors (4th year) during the 2024-2025 academic year. Rising Seniors (current Juniors) should apply to our general SDE Intern position instead.
+
+Posted: December 18, 2024

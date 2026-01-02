@@ -1,0 +1,85 @@
+{
+  "user_profile": {
+    "name": "Test User",
+    "email": "testuser@example.com",
+    "class_standing": "Junior",
+    "graduation_date": "May 2026",
+    "major": "Computer Science",
+    "minor": "",
+    "gpa": 3.7,
+    "work_authorization": "US Citizen",
+    "target_job_type": "Internship",
+    "target_season_year": "Summer 2025",
+    "preferred_locations": ["Remote", "Mountain View", "Seattle", "Redmond"],
+    "work_model": "Any",
+    "min_salary_hourly": 25,
+    "target_companies": ["Google", "Microsoft"],
+    "skills": ["Python", "Java", "JavaScript", "SQL", "React"]
+  },
+  "expected_results": {
+    "jobs_that_pass_filter": [
+      {
+        "url": "https://test-jobs.example.com/google-swe-intern",
+        "company": "Google",
+        "reason": "Matches all criteria: internship, summer 2025, no class standing restriction"
+      },
+      {
+        "url": "https://test-jobs.example.com/microsoft-intern",
+        "company": "Microsoft",
+        "reason": "Matches all criteria: internship, summer 2025, no class standing restriction"
+      },
+      {
+        "url": "https://test-jobs.example.com/startup-no-visa",
+        "company": "TechStartup",
+        "reason": "User is US Citizen, visa requirement doesn't filter them out"
+      }
+    ],
+    "jobs_that_fail_filter": [
+      {
+        "url": "https://test-jobs.example.com/meta-fulltime",
+        "company": "Meta",
+        "reason": "Full-time position, user wants Internship",
+        "filter": "job_type"
+      },
+      {
+        "url": "https://test-jobs.example.com/amazon-senior-only",
+        "company": "Amazon",
+        "reason": "Requires Senior, user is Junior",
+        "filter": "class_standing"
+      }
+    ],
+    "email_updates": [
+      {
+        "email_fixture": "confirmation_google.json",
+        "expected_status": "Applied",
+        "company": "Google"
+      },
+      {
+        "email_fixture": "oa_microsoft.json",
+        "expected_status": "OA",
+        "company": "Microsoft"
+      },
+      {
+        "email_fixture": "interview_google.json",
+        "expected_status": "Phone",
+        "company": "Google"
+      },
+      {
+        "email_fixture": "technical_google.json",
+        "expected_status": "Technical",
+        "company": "Google"
+      },
+      {
+        "email_fixture": "offer_google.json",
+        "expected_status": "Offer",
+        "company": "Google"
+      },
+      {
+        "email_fixture": "rejection_unknown.json",
+        "expected_status": null,
+        "company": "RandomCorp",
+        "notes": "No matching job in sheet, no update should happen"
+      }
+    ]
+  }
+}

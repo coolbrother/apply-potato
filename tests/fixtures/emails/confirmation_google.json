@@ -1,0 +1,15 @@
+{
+  "message_id": "test-email-001",
+  "subject": "Your application to Google has been received",
+  "sender": "Google Careers",
+  "sender_email": "careers-noreply@google.com",
+  "date": "2024-12-22T10:30:00",
+  "category": "Primary",
+  "body_text": "Dear Candidate,\n\nThank you for applying to the Software Engineering Intern, Summer 2025 position at Google.\n\nWe have received your application and our recruiting team will review it carefully. If your qualifications match our requirements, a recruiter will reach out to you within the next few weeks.\n\nIn the meantime, you can check the status of your application in your Google Careers dashboard.\n\nBest regards,\nGoogle Recruiting Team",
+  "body_html": "<html><body><p>Dear Candidate,</p><p>Thank you for applying to the <strong>Software Engineering Intern, Summer 2025</strong> position at Google.</p><p>We have received your application and our recruiting team will review it carefully.</p></body></html>",
+  "expected_classification": {
+    "category": "confirmation",
+    "company_candidates": ["Google"],
+    "position": "Software Engineering Intern"
+  }
+}

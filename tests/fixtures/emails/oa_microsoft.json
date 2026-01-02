@@ -1,0 +1,16 @@
+{
+  "message_id": "test-email-002",
+  "subject": "Microsoft Online Assessment Invitation",
+  "sender": "Microsoft Recruiting",
+  "sender_email": "msrecruiting@microsoft.com",
+  "date": "2024-12-23T14:00:00",
+  "category": "Primary",
+  "body_text": "Hello,\n\nCongratulations! You have been selected to complete an Online Assessment for the Software Engineer Intern position at Microsoft.\n\nPlease complete the assessment within 7 days using the link below. The assessment will take approximately 90 minutes and includes coding challenges and problem-solving questions.\n\nAssessment Link: https://assessment.microsoft.com/abc123\n\nDeadline: December 30, 2024\n\nIf you have any questions, please reply to this email.\n\nBest,\nMicrosoft University Recruiting",
+  "body_html": "<html><body><p>Hello,</p><p>Congratulations! You have been selected to complete an <strong>Online Assessment</strong> for the Software Engineer Intern position at Microsoft.</p><p>Deadline: December 30, 2024</p></body></html>",
+  "expected_classification": {
+    "category": "oa",
+    "company_candidates": ["Microsoft"],
+    "position": "Software Engineer Intern",
+    "date_mentioned": "December 30, 2024"
+  }
+}

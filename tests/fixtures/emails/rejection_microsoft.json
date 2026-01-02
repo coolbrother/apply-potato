@@ -1,0 +1,15 @@
+{
+  "message_id": "test-email-005",
+  "subject": "Thank you for interviewing with Microsoft",
+  "sender": "Microsoft Recruiting",
+  "sender_email": "msrecruiting@microsoft.com",
+  "date": "2024-12-29T11:00:00",
+  "category": "Primary",
+  "body_text": "Dear Candidate,\n\nThank you for interviewing for the Software Engineer Intern position at Microsoft. We appreciate the time you invested in our interview process.\n\nAfter careful consideration, we have decided not to move forward with your application at this time. This decision was not easy, as we had many qualified candidates.\n\nWe encourage you to apply to future positions at Microsoft. Your application will remain in our system for one year.\n\nWe wish you success in your career.\n\nBest regards,\nMicrosoft University Recruiting Team",
+  "body_html": "<html><body><p>Dear Candidate,</p><p>Thank you for interviewing at Microsoft. We have decided not to move forward with your application at this time.</p></body></html>",
+  "expected_classification": {
+    "category": "rejection",
+    "company_candidates": ["Microsoft"],
+    "position": "Software Engineer Intern"
+  }
+}

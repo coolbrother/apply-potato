@@ -1,0 +1,16 @@
+{
+  "message_id": "test-email-007",
+  "subject": "Google Virtual Onsite Interview - Software Engineering Intern",
+  "sender": "Google Recruiter",
+  "sender_email": "recruiter@google.com",
+  "date": "2025-01-03T14:00:00",
+  "category": "Primary",
+  "body_text": "Hi,\n\nCongratulations on passing your phone interview! We were impressed with your performance and would like to invite you to a Virtual Onsite Technical Interview for the Software Engineering Intern position.\n\nInterview Details:\n- Format: Virtual Onsite (Google Meet)\n- Duration: 3-4 hours (3 technical rounds + 1 behavioral)\n- Date Options: January 15, 16, or 17, 2025\n\nEach technical round will be 45 minutes and will focus on:\n1. Coding and algorithms\n2. System design basics\n3. Technical problem solving\n\nPlease use the scheduling link below to select your preferred date and time:\nhttps://calendar.google.com/schedule/onsite123\n\nTo prepare, we recommend:\n- Practice coding problems on LeetCode\n- Review data structures and algorithms\n- Be ready to explain your thought process\n\nPlease confirm your interview slot within 5 business days.\n\nBest regards,\nSarah Chen\nGoogle University Recruiting",
+  "body_html": "<html><body><p>Hi,</p><p>Congratulations on passing your phone interview! We would like to invite you to a <strong>Virtual Onsite Technical Interview</strong>.</p><p>Interview Details:</p><ul><li>Format: Virtual Onsite (3-4 hours)</li><li>Date Options: January 15, 16, or 17, 2025</li></ul><p>Please confirm within 5 business days.</p></body></html>",
+  "expected_classification": {
+    "category": "technical",
+    "company_candidates": ["Google"],
+    "position": "Software Engineering Intern",
+    "action_required": "Schedule interview within 5 business days"
+  }
+}
