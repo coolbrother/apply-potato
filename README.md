@@ -1,6 +1,6 @@
 # ApplyPotato
 
-A self-hosted, AI-powered job tracking system that automatically finds internships and full-time positions from GitHub job lists, filters them based on your eligibility, and tracks application status through Gmail.
+A self-hosted, AI-powered job tracking system that automatically scrapes GitHub job lists, filters opportunities by your eligibility, monitors application status via Gmail, and syncs everything to Google Sheets.
 
 ![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)
 
