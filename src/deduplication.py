@@ -7,7 +7,7 @@ Also tracks filtered-out jobs to avoid re-processing them.
 
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 from urllib.parse import urlparse, urlunparse, parse_qs, urlencode
 
@@ -19,6 +19,9 @@ logger = logging.getLogger(__name__)
 
 # File to track filtered-out jobs (stored in data/ directory)
 FILTERED_JOBS_FILENAME = "filtered_jobs.json"
+
+# File to track seen source URLs (stored in data/ directory)
+SEEN_SOURCES_FILENAME = "seen_sources.json"
 
 
 # Tracking parameters to remove from URLs
@@ -113,7 +116,9 @@ class DeduplicationChecker:
         self._sheets_client = sheets_client
         self._cached_urls: Optional[set] = None
         self._filtered_urls: set = set()
+        self._seen_source_urls: dict = {}  # {normalized_url: timestamp_str}
         self._load_filtered_jobs()
+        self._load_seen_sources()
 
     @property
     def sheets_client(self) -> SheetsClient:
@@ -251,6 +256,94 @@ class DeduplicationChecker:
         self._filtered_urls = set()
         self._save_filtered_jobs()
         logger.info("Cleared filtered jobs cache")
+
+    # =========================================================================
+    # Seen Source URLs Tracking
+    # =========================================================================
+
+    def _load_seen_sources(self) -> None:
+        """Load seen source URLs from file and prune expired entries."""
+        seen_file = self.config.data_dir / SEEN_SOURCES_FILENAME
+        if seen_file.exists():
+            try:
+                with open(seen_file, "r") as f:
+                    data = json.load(f)
+                    self._seen_source_urls = data.get("seen_urls", {})
+                    logger.debug(f"Loaded {len(self._seen_source_urls)} seen source URLs")
+            except (json.JSONDecodeError, IOError) as e:
+                logger.warning(f"Failed to load seen sources file: {e}")
+                self._seen_source_urls = {}
+        else:
+            self._seen_source_urls = {}
+
+        # Prune expired entries
+        self._prune_seen_sources()
+
+    def _prune_seen_sources(self) -> None:
+        """Remove seen source URLs older than TTL."""
+        if not self._seen_source_urls:
+            return
+
+        ttl_days = self.config.seen_sources_ttl_days
+        cutoff = datetime.now() - timedelta(days=ttl_days)
+        original_count = len(self._seen_source_urls)
+
+        # Filter out expired entries
+        self._seen_source_urls = {
+            url: ts for url, ts in self._seen_source_urls.items()
+            if datetime.fromisoformat(ts) > cutoff
+        }
+
+        pruned_count = original_count - len(self._seen_source_urls)
+        if pruned_count > 0:
+            logger.info(f"Pruned {pruned_count} seen source URLs older than {ttl_days} days")
+            self._save_seen_sources()
+
+    def _save_seen_sources(self) -> None:
+        """Save seen source URLs to file."""
+        seen_file = self.config.data_dir / SEEN_SOURCES_FILENAME
+
+        data = {
+            "seen_urls": self._seen_source_urls,
+            "last_updated": datetime.now().isoformat()
+        }
+
+        try:
+            with open(seen_file, "w") as f:
+                json.dump(data, f, indent=2)
+        except IOError as e:
+            logger.error(f"Failed to save seen sources file: {e}")
+
+    def is_seen_source(self, url: str) -> bool:
+        """
+        Check if a source URL was previously processed.
+
+        Args:
+            url: Source URL (will be normalized)
+
+        Returns:
+            True if URL was previously seen, False otherwise
+        """
+        normalized = normalize_url(url)
+        return normalized in self._seen_source_urls
+
+    def mark_source_seen(self, url: str) -> None:
+        """
+        Mark a source URL as seen/processed.
+
+        Args:
+            url: Source URL (will be normalized)
+        """
+        normalized = normalize_url(url)
+        self._seen_source_urls[normalized] = datetime.now().isoformat()
+        self._save_seen_sources()
+        logger.debug(f"Marked source as seen: {url}")
+
+    def clear_seen_sources(self) -> None:
+        """Clear all seen source URLs."""
+        self._seen_source_urls = {}
+        self._save_seen_sources()
+        logger.info("Cleared seen sources cache")
 
 
 # Singleton instance

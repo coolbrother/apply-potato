@@ -162,6 +162,13 @@ class JobScraper:
         logger.info("")  # Visual separator between jobs
         logger.info(f"Processing: {listing.company} - {listing.title}")
 
+        # Pre-scrape check: skip if we've already processed this source URL
+        # This avoids wasting scrape calls on URLs we've seen before
+        if self.dedup_checker.is_seen_source(listing.url):
+            logger.info(f"  Skipping: already processed this source URL")
+            self.stats["duplicates_skipped"] += 1
+            return None
+
         # Pipeline-level retry: scrape + extract together
         # Retries with increasing render delay when extraction fails
         extracted_jobs = None
@@ -274,6 +281,9 @@ class JobScraper:
 
             except Exception as e:
                 logger.error(f"  Failed to add to Sheets: {e}")
+
+        # Mark source URL as seen so we skip it on future runs
+        self.dedup_checker.mark_source_seen(listing.url)
 
         return added_any
 
@@ -414,16 +424,31 @@ def clear_filtered():
     print("Filtered jobs cache cleared.")
 
 
+def clear_seen():
+    """Clear the seen sources cache."""
+    config = get_config()
+    setup_logging("scrape", config, console=True)
+
+    from src.deduplication import get_dedup_checker
+    checker = get_dedup_checker(config)
+    checker.clear_seen_sources()
+    print("Seen sources cache cleared.")
+
+
 def main():
     parser = argparse.ArgumentParser(description="ApplyPotato Job Scraper")
     parser.add_argument("--scheduled", action="store_true", help="Run on schedule")
     parser.add_argument("--limit", type=int, help="Max jobs to process")
     parser.add_argument("--clear-filtered", action="store_true",
                         help="Clear filtered jobs cache (use when profile changes)")
+    parser.add_argument("--clear-seen", action="store_true",
+                        help="Clear seen sources cache (re-process all URLs)")
     args = parser.parse_args()
 
     if args.clear_filtered:
         clear_filtered()
+    elif args.clear_seen:
+        clear_seen()
     elif args.scheduled:
         run_scheduled()
     else:
