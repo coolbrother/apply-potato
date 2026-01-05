@@ -15,14 +15,14 @@ This script:
 7. Optionally tests OAuth flows
 """
 
-import os
-import sys
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 # Project paths
 PROJECT_ROOT = Path(__file__).parent.resolve()
+SRC_DIR = PROJECT_ROOT / "src"
 VENV_DIR = PROJECT_ROOT / "venv"
 REQUIREMENTS_FILE = PROJECT_ROOT / "requirements.txt"
 ENV_FILE = PROJECT_ROOT / ".env"
@@ -220,9 +220,7 @@ def validate_config() -> bool:
     """Validate that configuration loads correctly."""
     print_info("Validating configuration...")
     try:
-        # Add src to path so we can import config
-        sys.path.insert(0, str(PROJECT_ROOT / "src"))
-        from config import load_config
+        from src.config import load_config
         config = load_config()
         print_success("Configuration loaded successfully")
         return True
@@ -235,9 +233,8 @@ def test_oauth_sheets() -> bool:
     """Test Google Sheets OAuth flow."""
     print_info("Testing Google Sheets OAuth...")
     try:
-        sys.path.insert(0, str(PROJECT_ROOT / "src"))
-        from sheets import SheetsClient
-        from config import load_config
+        from src.sheets import SheetsClient
+        from src.config import load_config
 
         config = load_config()
         client = SheetsClient(config)
@@ -253,9 +250,8 @@ def test_oauth_gmail() -> bool:
     """Test Gmail OAuth flow."""
     print_info("Testing Gmail OAuth...")
     try:
-        sys.path.insert(0, str(PROJECT_ROOT / "src"))
-        from gmail import GmailClient
-        from config import load_config
+        from src.gmail import GmailClient
+        from src.config import load_config
 
         config = load_config()
         client = GmailClient(config)
@@ -330,9 +326,9 @@ def main() -> int:
     print("This creates token files so the scripts can run automatically.")
     print()
     if prompt_yes_no("Would you like to test Google OAuth flows now?"):
-        print()
-        test_oauth_sheets()
-        test_oauth_gmail()
+        if not test_oauth_sheets() or not test_oauth_gmail():
+            print("There were errors with OAuth. Please fix them and try again.")
+            return 1
     else:
         print_info("Skipping OAuth testing")
         print("OAuth will be triggered on first run of scrape_jobs.py or check_gmail.py")

@@ -9,9 +9,11 @@ This module provides:
 - Mock Gmail client (returns fixture emails)
 """
 
+import asyncio
 import json
 import os
-import sys
+import re
+import src.sheets
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -19,14 +21,16 @@ from typing import Dict, List, Optional, Tuple
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
-# Add project root to path
-PROJECT_ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+from bs4 import BeautifulSoup
 
 from src.config import Config, UserProfile, DiscordConfig, GitHubRepo
 from src.github_parser import JobListing
 from src.gmail import EmailMessage
+from src.sheets import SheetsClient
+from tests.mocks.mock_sheets import MockSheetsClient
+
+# Project root for fixture paths
+PROJECT_ROOT = Path(__file__).parent.parent
 
 
 # =============================================================================
@@ -154,8 +158,6 @@ def test_config(test_user_profile: UserProfile, test_google_sheet_id: str) -> Co
 
 def parse_fixture_markdown() -> List[JobListing]:
     """Parse the test jobs markdown fixture and return JobListing objects."""
-    from bs4 import BeautifulSoup
-
     md_path = GITHUB_MD_DIR / "test_jobs.md"
     with open(md_path, encoding="utf-8") as f:
         content = f.read()
@@ -201,7 +203,6 @@ def parse_fixture_markdown() -> List[JobListing]:
         age_days = 0
         if len(cells) >= 5:
             age_text = cells[4].get_text(strip=True)
-            import re
             match = re.match(r"(\d+)d", age_text)
             if match:
                 age_days = int(match.group(1))
@@ -345,10 +346,7 @@ def mock_gmail_client(mock_email_fixtures: List[EmailMessage]):
 @pytest.fixture
 def sheets_client(test_config: Config):
     """Get real SheetsClient pointed at test sheet."""
-    from src.sheets import SheetsClient
-
     # Clear singleton to ensure fresh client with test config
-    import src.sheets
     src.sheets._client = None
 
     client = SheetsClient(test_config)
@@ -408,7 +406,6 @@ def clean_test_sheet(sheets_client):
 @pytest.fixture
 def mock_sheets_client():
     """Get mock SheetsClient that stores data in memory."""
-    from tests.mocks.mock_sheets import MockSheetsClient
     return MockSheetsClient()
 
 
@@ -478,7 +475,6 @@ def pytest_configure(config):
 @pytest.fixture(scope="session")
 def event_loop():
     """Create event loop for async tests."""
-    import asyncio
     loop = asyncio.new_event_loop()
     yield loop
     loop.close()

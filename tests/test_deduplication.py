@@ -8,16 +8,13 @@ Usage:
 """
 
 import argparse
-import sys
-from pathlib import Path
 
-# Add src to path
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
+from src.config import get_config
 from src.deduplication import (
     normalize_url,
     DeduplicationChecker,
 )
+from src.logging_config import setup_logging
 
 
 def test_normalize_url():
@@ -257,9 +254,6 @@ def run_live_sheets_test(args):
     print("\n" + "=" * 60)
     print("Testing with LIVE Google Sheets")
     print("=" * 60)
-
-    from src.config import get_config
-    from src.logging_config import setup_logging
 
     config = get_config()
     setup_logging("dedup_test", config, console=True)

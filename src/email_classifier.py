@@ -10,6 +10,7 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
+from bs4 import BeautifulSoup
 from openai import OpenAI, APIError, RateLimitError, APITimeoutError
 from google import genai
 from google.genai import types as genai_types
@@ -94,7 +95,6 @@ class EmailClassifier:
         # Get body - prefer plain text, convert HTML if needed
         body = email.body_text
         if not body and email.body_html:
-            from bs4 import BeautifulSoup
             soup = BeautifulSoup(email.body_html, 'html.parser')
             for element in soup(['script', 'style']):
                 element.decompose()

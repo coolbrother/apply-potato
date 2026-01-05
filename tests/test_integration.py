@@ -8,14 +8,10 @@ Usage:
     pytest tests/test_integration.py -v
 """
 
-import sys
-from pathlib import Path
-
 import pytest
 
-# Add project root to path
-PROJECT_ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
+from src.sheets import HEADERS
+from tests.conftest import parse_fixture_markdown
 
 
 # =============================================================================
@@ -27,8 +23,6 @@ class TestGitHubParserWithFixtures:
 
     def test_parse_fixture_markdown(self):
         """Test that fixture markdown is parsed correctly."""
-        from tests.conftest import parse_fixture_markdown
-
         jobs = parse_fixture_markdown()
 
         # Should find multiple jobs
@@ -45,8 +39,6 @@ class TestGitHubParserWithFixtures:
 
     def test_parse_continuation_rows(self):
         """Test that ↳ continuation rows are handled correctly."""
-        from tests.conftest import parse_fixture_markdown
-
         jobs = parse_fixture_markdown()
 
         # TechStartup should have multiple listings (↳ row)
@@ -55,8 +47,6 @@ class TestGitHubParserWithFixtures:
 
     def test_old_jobs_included_in_fixtures(self):
         """Test that age filtering is visible in fixtures."""
-        from tests.conftest import parse_fixture_markdown
-
         jobs = parse_fixture_markdown()
 
         # OldCompany has age 30d - should be in fixtures
@@ -74,8 +64,6 @@ class TestMockSheets:
 
     def test_mock_sheets_has_headers(self, mock_sheets_client):
         """Test that mock sheet starts with headers."""
-        from src.sheets import HEADERS
-
         assert mock_sheets_client.rows[0] == HEADERS
 
     def test_mock_sheets_add_job(self, mock_sheets_client):

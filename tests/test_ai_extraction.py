@@ -5,15 +5,9 @@ These tests make real AI API calls to verify extraction works correctly.
 Kept minimal (2 tests) to balance coverage vs speed.
 """
 
-import os
-import sys
 from pathlib import Path
 
 import pytest
-
-# Add project root to path
-PROJECT_ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.ai_extractor import AIExtractor
 from src.config import get_config

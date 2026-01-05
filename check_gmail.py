@@ -17,21 +17,18 @@ Usage:
 
 import argparse
 import logging
-import sys
 import time
 from datetime import datetime
-from pathlib import Path
 from typing import Optional
 
-# Add src to path
-sys.path.insert(0, str(Path(__file__).parent))
+from apscheduler.schedulers.blocking import BlockingScheduler
 
 from src.config import get_config, Config
 from src.logging_config import setup_logging
 from src.gmail import GmailClient, get_gmail_client, EmailMessage
 from src.email_filters import apply_privacy_filters
 from src.email_classifier import EmailClassifier, get_classifier, EmailClassification
-from src.sheets import SheetsClient, get_sheets_client, JobRow
+from src.sheets import SheetsClient, get_sheets_client, JobRow, normalize_date
 from src.notifications import is_dream_company, notify_status_change
 
 
@@ -183,7 +180,6 @@ class GmailChecker:
             if classification.date_mentioned:
                 # Try to use the date from the email
                 try:
-                    from src.sheets import normalize_date
                     date_str = normalize_date(classification.date_mentioned)
                 except Exception:
                     pass
@@ -366,8 +362,6 @@ def run_once(reprocess: bool = False):
 
 def run_scheduled():
     """Run the pipeline on a schedule."""
-    from apscheduler.schedulers.blocking import BlockingScheduler
-
     config = get_config()
     setup_logging("gmail", config, console=True)
 

@@ -20,14 +20,11 @@ Usage:
 import argparse
 import asyncio
 import logging
-import sys
 import time
 from datetime import datetime
-from pathlib import Path
 from typing import List, Optional
 
-# Add src to path
-sys.path.insert(0, str(Path(__file__).parent))
+from apscheduler.schedulers.blocking import BlockingScheduler
 
 from src.config import get_config, Config
 from src.logging_config import setup_logging
@@ -384,8 +381,6 @@ def run_once(limit: Optional[int] = None):
 
 def run_scheduled():
     """Run the pipeline on a schedule."""
-    from apscheduler.schedulers.blocking import BlockingScheduler
-
     config = get_config()
     setup_logging("scrape", config, console=True)
 
@@ -418,7 +413,6 @@ def clear_filtered():
     config = get_config()
     setup_logging("scrape", config, console=True)
 
-    from src.deduplication import get_dedup_checker
     checker = get_dedup_checker(config)
     checker.clear_filtered_jobs()
     print("Filtered jobs cache cleared.")
@@ -429,7 +423,6 @@ def clear_seen():
     config = get_config()
     setup_logging("scrape", config, console=True)
 
-    from src.deduplication import get_dedup_checker
     checker = get_dedup_checker(config)
     checker.clear_seen_sources()
     print("Seen sources cache cleared.")

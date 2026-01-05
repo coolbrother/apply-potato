@@ -25,18 +25,15 @@ Usage:
 
 import argparse
 import asyncio
-import sys
 import io
 import logging
+import sys
 from pathlib import Path
 
 # Fix Windows console encoding
 if sys.platform == "win32":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
-
-# Add src to path
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.config import get_config
 from src.scraper import PlaywrightScraper

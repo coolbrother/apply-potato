@@ -6,10 +6,11 @@ Handles OAuth authentication and email fetching for status tracking.
 import base64
 import json
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timedelta
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import List, Optional
-from dataclasses import dataclass
 
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -296,8 +297,6 @@ class GmailClient:
 
                     # Parse date
                     try:
-                        # Gmail dates can have various formats, try common ones
-                        from email.utils import parsedate_to_datetime
                         msg_date = parsedate_to_datetime(date_str)
                     except (ValueError, TypeError):
                         msg_date = datetime.now()
