@@ -17,8 +17,9 @@ Usage:
     python test_e2e.py <url> --save-content <f>   # Save scraped content to file
 
     # From GitHub job lists
-    python test_e2e.py --from-github              # Full pipeline, 1 job
+    python test_e2e.py --from-github              # Full pipeline, 1 job (default)
     python test_e2e.py --from-github --count 5    # Full pipeline, 5 jobs
+    python test_e2e.py --from-github --count 0    # Full pipeline, all jobs
     python test_e2e.py --from-github --parse-only # Just show parsed jobs
     python test_e2e.py --from-github --scrape-only --save-content ./scraped/
 """
@@ -186,10 +187,11 @@ async def run_pipeline(args):
             logger.info("=" * 70)
             return True
 
-        # Select jobs to process
+        # Select jobs to process (0 means all)
+        count = args.count if args.count > 0 else len(github_jobs)
         jobs_to_process = [
             {"url": job.url, "company": job.company, "title": job.title, "source": job.source_repo}
-            for job in github_jobs[:args.count]
+            for job in github_jobs[:count]
         ]
         logger.info(f"  Processing {len(jobs_to_process)} job(s)")
 
@@ -424,8 +426,8 @@ Examples:
     parser.add_argument("url", nargs="?", help="Job posting URL to test")
     parser.add_argument("--from-github", action="store_true",
                         help="Fetch jobs from GitHub instead of URL")
-    parser.add_argument("--count", "-c", type=int, default=None,
-                        help="Number of jobs to process from GitHub (default: all)")
+    parser.add_argument("--count", "-c", type=int, default=1,
+                        help="Number of jobs to process from GitHub (default: 1, use 0 for all)")
 
     # Pipeline control
     parser.add_argument("--parse-only", action="store_true",

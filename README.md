@@ -134,7 +134,7 @@ USER_TARGET_SEASON_YEAR=Summer 2026
 ### 5. Run Setup
 
 ```bash
-python setup.py
+python setup_wizard.py
 ```
 
 This will:
@@ -261,7 +261,7 @@ python install_service.py --uninstall
 apply-potato/
 ├── scrape_jobs.py          # Main job scraping script
 ├── check_gmail.py          # Gmail monitoring script
-├── setup.py                # First-time setup
+├── setup_wizard.py         # First-time setup
 ├── install_service.py      # Service installer
 ├── src/                    # Source modules
 │   ├── config.py           # Configuration loader
