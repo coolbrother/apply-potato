@@ -19,7 +19,6 @@ dependencies = [
     "apscheduler>=3.10.4",
     "python-dotenv>=1.0.0",
     "httpx>=0.25.0",
-    "colorlog>=6.8.0",
     "rapidfuzz>=3.5.0",
 ]
 
