@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-setup.py - First-time setup script for ApplyPotato
+setup_wizard.py - First-time setup script for ApplyPotato
 
 Usage:
-    python setup.py
+    python setup_wizard.py
 
 This script:
 1. Creates virtual environment if missing
@@ -127,7 +127,7 @@ def print_activation_instructions() -> None:
     print()
     print("Then run this script again:")
     print()
-    print("    python setup.py")
+    print("    python setup_wizard.py")
 
 
 def install_requirements() -> bool:
@@ -307,7 +307,7 @@ def main() -> int:
     if not check_credentials_file():
         print_google_cloud_instructions()
         print()
-        print("After setting up credentials.json, run setup.py again")
+        print("After setting up credentials.json, run setup_wizard.py again")
         print("to continue with configuration validation.")
         return 3
     print_success("credentials.json found")

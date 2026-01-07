@@ -117,14 +117,14 @@ def check_prerequisites() -> Tuple[bool, str]:
     if not python_path.exists():
         errors.append(
             f"Virtual environment not found at {VENV_DIR}\n"
-            "Run 'python setup.py' first."
+            "Run 'python setup_wizard.py' first."
         )
 
     # Check .env
     if not ENV_FILE.exists():
         errors.append(
             f".env file not found at {ENV_FILE}\n"
-            "Run 'python setup.py' first."
+            "Run 'python setup_wizard.py' first."
         )
 
     # Check credentials

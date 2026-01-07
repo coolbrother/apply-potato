@@ -1,30 +1,23 @@
-#!/usr/bin/env python3
 """
-Test script for deduplication module.
+Tests for deduplication module.
 
 Usage:
-    python test_deduplication.py                # Run all tests
-    python test_deduplication.py --live         # Test with live Google Sheets
+    pytest tests/test_deduplication.py -v
+    pytest tests/test_deduplication.py -v -m integration  # Include live Sheets test
 """
 
-import argparse
+import pytest
 
-from src.config import get_config
 from src.deduplication import (
     normalize_url,
     DeduplicationChecker,
 )
-from src.logging_config import setup_logging
 
 
-def test_normalize_url():
+class TestNormalizeUrl:
     """Test URL normalization."""
-    print("\n" + "=" * 60)
-    print("Testing normalize_url()")
-    print("=" * 60)
 
-    test_cases = [
-        # (input, expected)
+    @pytest.mark.parametrize("input_url,expected", [
         # Basic normalization
         (
             "https://boards.greenhouse.io/company/jobs/123",
@@ -85,7 +78,7 @@ def test_normalize_url():
             "https://careers.company.com/job/123?_ga=abc&_gl=xyz&id=456",
             "https://careers.company.com/job/123?id=456",
         ),
-        # HTTP vs HTTPS normalization (should both normalize to https)
+        # HTTP vs HTTPS normalization
         (
             "http://boards.greenhouse.io/company/jobs/123",
             "https://boards.greenhouse.io/company/jobs/123",
@@ -119,46 +112,28 @@ def test_normalize_url():
             "  https://example.com/job  ",
             "https://example.com/job",
         ),
-    ]
-
-    passed = 0
-    failed = 0
-
-    for input_url, expected in test_cases:
+    ])
+    def test_normalize_url(self, input_url, expected):
         result = normalize_url(input_url)
-        status = "PASS" if result == expected else "FAIL"
-
-        if result == expected:
-            passed += 1
-            print(f"  {status}: '{input_url[:60]}...' " if len(input_url) > 60 else f"  {status}: '{input_url}'")
-        else:
-            failed += 1
-            print(f"  {status}: '{input_url}'")
-            print(f"         Expected: '{expected}'")
-            print(f"         Got:      '{result}'")
-
-    print(f"\nResults: {passed} passed, {failed} failed")
-    assert failed == 0, f"{failed} URL normalization tests failed"
+        assert result == expected
 
 
-def test_url_dedup_matching():
+class TestUrlDedupMatching:
     """Test URL-based deduplication matching."""
-    print("\n" + "=" * 60)
-    print("Testing DeduplicationChecker URL matching")
-    print("=" * 60)
 
-    checker = DeduplicationChecker()
+    @pytest.fixture
+    def checker_with_cache(self):
+        """Create a checker with pre-populated cache."""
+        checker = DeduplicationChecker()
+        checker._cached_urls = {
+            "https://boards.greenhouse.io/google/jobs/123",
+            "https://jobs.lever.co/meta/abc456",
+            "https://amazon.wd5.myworkdayjobs.com/jobs/sde-intern",
+            "https://careers.stripe.com/apply?job_id=789",
+        }
+        return checker
 
-    # Manually set cache with normalized URLs
-    checker._cached_urls = {
-        "https://boards.greenhouse.io/google/jobs/123",
-        "https://jobs.lever.co/meta/abc456",
-        "https://amazon.wd5.myworkdayjobs.com/jobs/sde-intern",
-        "https://careers.stripe.com/apply?job_id=789",
-    }
-
-    test_cases = [
-        # (url, should_exist)
+    @pytest.mark.parametrize("url,should_exist", [
         # Exact match
         ("https://boards.greenhouse.io/google/jobs/123", True),
         # With trailing slash
@@ -183,153 +158,50 @@ def test_url_dedup_matching():
         ("https://careers.stripe.com/apply?job_id=999", False),
         # Completely new URL
         ("https://careers.newcompany.com/job/123", False),
-        # HTTP vs HTTPS should match (both normalize to https)
+        # HTTP vs HTTPS should match
         ("http://boards.greenhouse.io/google/jobs/123", True),
         ("http://jobs.lever.co/meta/abc456", True),
-    ]
-
-    passed = 0
-    failed = 0
-
-    for url, should_exist in test_cases:
-        result = checker.job_exists(url)
-        status = "PASS" if result == should_exist else "FAIL"
-
-        if result == should_exist:
-            passed += 1
-            expected_str = "exists" if should_exist else "new"
-            print(f"  {status}: {url[:50]}... -> {expected_str}" if len(url) > 50 else f"  {status}: {url} -> {expected_str}")
-        else:
-            failed += 1
-            expected_str = "should exist" if should_exist else "should be new"
-            result_str = "found" if result else "not found"
-            print(f"  {status}: {url}")
-            print(f"         {result_str} ({expected_str})")
-
-    print(f"\nResults: {passed} passed, {failed} failed")
-    assert failed == 0, f"{failed} URL dedup matching tests failed"
+    ])
+    def test_url_dedup_matching(self, checker_with_cache, url, should_exist):
+        result = checker_with_cache.job_exists(url)
+        assert result == should_exist
 
 
-def test_add_to_cache():
+class TestAddToCache:
     """Test adding URLs to cache."""
-    print("\n" + "=" * 60)
-    print("Testing add_to_cache()")
-    print("=" * 60)
 
-    checker = DeduplicationChecker()
-    checker._cached_urls = set()
+    def test_add_to_cache(self):
+        checker = DeduplicationChecker()
+        checker._cached_urls = set()
 
-    # Add a URL
-    url = "https://boards.greenhouse.io/company/jobs/999?utm_source=test"
-    checker.add_to_cache(url)
+        # Add a URL with tracking params
+        url = "https://boards.greenhouse.io/company/jobs/999?utm_source=test"
+        checker.add_to_cache(url)
 
-    # Should now exist (with normalization)
-    exists = checker.job_exists(url)
-    exists_normalized = checker.job_exists("https://boards.greenhouse.io/company/jobs/999")
-    exists_with_other_params = checker.job_exists("https://boards.greenhouse.io/company/jobs/999?ref=other")
-
-    results = [
-        ("Original URL exists after add", exists, True),
-        ("Normalized URL exists", exists_normalized, True),
-        ("URL with different tracking params exists", exists_with_other_params, True),
-    ]
-
-    passed = 0
-    failed = 0
-
-    for desc, result, expected in results:
-        status = "PASS" if result == expected else "FAIL"
-        if result == expected:
-            passed += 1
-        else:
-            failed += 1
-        print(f"  {status}: {desc}")
-
-    print(f"\nResults: {passed} passed, {failed} failed")
-    assert failed == 0, f"{failed} cache tests failed"
+        # Should now exist (with normalization)
+        assert checker.job_exists(url) is True
+        assert checker.job_exists("https://boards.greenhouse.io/company/jobs/999") is True
+        assert checker.job_exists("https://boards.greenhouse.io/company/jobs/999?ref=other") is True
 
 
-def run_live_sheets_test(args):
-    """Test with live Google Sheets."""
-    print("\n" + "=" * 60)
-    print("Testing with LIVE Google Sheets")
-    print("=" * 60)
+@pytest.mark.integration
+class TestLiveSheets:
+    """Test with live Google Sheets (requires TEST_GOOGLE_SHEET_ID)."""
 
-    config = get_config()
-    setup_logging("dedup_test", config, console=True)
+    def test_refresh_cache_from_sheets(self):
+        """Test loading cache from live Google Sheets."""
+        from src.config import get_config
+        from src.logging_config import setup_logging
+        import os
 
-    checker = DeduplicationChecker(config)
+        if not os.getenv("TEST_GOOGLE_SHEET_ID"):
+            pytest.skip("TEST_GOOGLE_SHEET_ID not set")
 
-    print("\nRefreshing cache from Google Sheets...")
-    checker.refresh_cache()
+        config = get_config()
+        setup_logging("dedup_test", config, console=True)
 
-    print(f"\nLoaded {len(checker._cached_urls)} existing job URLs")
+        checker = DeduplicationChecker(config)
+        checker.refresh_cache()
 
-    if checker._cached_urls:
-        print("\nSample of cached URLs (first 5):")
-        for i, url in enumerate(list(checker._cached_urls)[:5]):
-            print(f"  {i+1}. {url[:80]}..." if len(url) > 80 else f"  {i+1}. {url}")
-
-    # Test with some sample queries
-    test_urls = [
-        "https://boards.greenhouse.io/test/jobs/12345",
-        "https://jobs.lever.co/testcompany/abc123",
-    ]
-
-    print("\nTesting sample queries:")
-    for url in test_urls:
-        exists = checker.job_exists(url)
-        status = "EXISTS" if exists else "NEW"
-        print(f"  {url[:60]}... : {status}" if len(url) > 60 else f"  {url}: {status}")
-
-    return True
-
-
-def main():
-    parser = argparse.ArgumentParser(description="Test deduplication module")
-    parser.add_argument("--live", action="store_true", help="Test with live Google Sheets")
-    args = parser.parse_args()
-
-    print("\n" + "=" * 60)
-    print("DEDUPLICATION MODULE TESTS (URL-based)")
-    print("=" * 60)
-
-    failed_tests = []
-
-    # Run unit tests
-    try:
-        test_normalize_url()
-    except AssertionError as e:
-        failed_tests.append(f"test_normalize_url: {e}")
-
-    try:
-        test_url_dedup_matching()
-    except AssertionError as e:
-        failed_tests.append(f"test_url_dedup_matching: {e}")
-
-    try:
-        test_add_to_cache()
-    except AssertionError as e:
-        failed_tests.append(f"test_add_to_cache: {e}")
-
-    # Run live test if requested
-    if args.live:
-        run_live_sheets_test(args)
-
-    # Summary
-    print("\n" + "=" * 60)
-    print("SUMMARY")
-    print("=" * 60)
-
-    if not failed_tests:
-        print("All tests PASSED")
-        return 0
-    else:
-        print("Some tests FAILED:")
-        for test in failed_tests:
-            print(f"  - {test}")
-        return 1
-
-
-if __name__ == "__main__":
-    main()
+        # Just verify it loaded without error
+        assert isinstance(checker._cached_urls, set)
