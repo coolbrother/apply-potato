@@ -82,6 +82,16 @@ class JobScraper:
             "jobs_added": 0,
         }
 
+    def close(self):
+        """Close resources."""
+        self.github_parser.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+
     def _format_salary(self, job: ExtractedJob) -> str:
         """Format salary information for display."""
         if not job.salary_min and not job.salary_max:
@@ -373,8 +383,8 @@ def run_once(limit: Optional[int] = None):
     config = get_config()
     setup_logging("scrape", config, console=True)
 
-    scraper = JobScraper(config)
-    stats = asyncio.run(scraper.run(limit=limit))
+    with JobScraper(config) as scraper:
+        stats = asyncio.run(scraper.run(limit=limit))
 
     return stats
 
@@ -391,8 +401,8 @@ def run_scheduled():
 
     def job():
         try:
-            scraper = JobScraper(config)
-            asyncio.run(scraper.run())
+            with JobScraper(config) as scraper:
+                asyncio.run(scraper.run())
         except Exception as e:
             logger.error(f"Scheduled job failed: {e}")
 
