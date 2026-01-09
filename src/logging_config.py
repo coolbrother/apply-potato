@@ -5,8 +5,7 @@ Sets up file handlers with rotation for scrape and gmail logs.
 
 import logging
 import sys
-from logging.handlers import RotatingFileHandler
-from pathlib import Path
+from logging.handlers import TimedRotatingFileHandler
 from typing import Optional
 
 from .config import get_config, Config
@@ -16,11 +15,8 @@ from .config import get_config, Config
 LOG_FORMAT = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
 DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
-# Max log file size: 5 MB
-MAX_BYTES = 5 * 1024 * 1024
-
-# Keep 3 backup files
-BACKUP_COUNT = 3
+# Keep 30 days of logs
+BACKUP_COUNT = 30
 
 
 def setup_logging(
@@ -55,11 +51,12 @@ def setup_logging(
     # Clear existing handlers to avoid duplicates
     root_logger.handlers.clear()
 
-    # File handler with rotation
+    # File handler with daily rotation at midnight
     log_file = config.logs_dir / f"{log_name}.log"
-    file_handler = RotatingFileHandler(
+    file_handler = TimedRotatingFileHandler(
         log_file,
-        maxBytes=MAX_BYTES,
+        when="midnight",
+        interval=1,
         backupCount=BACKUP_COUNT,
         encoding="utf-8",
     )
