@@ -202,6 +202,43 @@ def get_winsw() -> Optional[Path]:
     return None
 
 
+def setup_playwright_symlink() -> bool:
+    """Create symlink so SYSTEM account can access user's Playwright browsers."""
+    user_playwright = Path.home() / "AppData" / "Local" / "ms-playwright"
+    system_playwright = Path("C:/Windows/system32/config/systemprofile/AppData/Local/ms-playwright")
+
+    # Check if user has Playwright installed
+    if not user_playwright.exists():
+        print_error(f"Playwright browsers not found at {user_playwright}")
+        print_info("Run 'playwright install' first")
+        return False
+
+    # Already set up correctly
+    if system_playwright.is_symlink():
+        print_success("Playwright symlink already exists")
+        return True
+
+    # Remove existing directory if present (empty or stale)
+    if system_playwright.exists():
+        try:
+            shutil.rmtree(system_playwright)
+        except Exception as e:
+            print_error(f"Failed to remove existing directory: {e}")
+            return False
+
+    # Ensure parent directory exists
+    system_playwright.parent.mkdir(parents=True, exist_ok=True)
+
+    # Create symlink
+    try:
+        system_playwright.symlink_to(user_playwright, target_is_directory=True)
+        print_success(f"Created symlink: {system_playwright} -> {user_playwright}")
+        return True
+    except OSError as e:
+        print_error(f"Failed to create symlink: {e}")
+        return False
+
+
 def create_winsw_xml(service_key: str) -> str:
     """Generate WinSW XML configuration for a service."""
     service = SERVICES[service_key]
@@ -365,6 +402,11 @@ def install_windows_services() -> bool:
     winsw = get_winsw()
     if not winsw:
         print_error("Could not get WinSW executable")
+        return False
+
+    # Setup Playwright symlink for SYSTEM account
+    if not setup_playwright_symlink():
+        print_error("Failed to setup Playwright for service")
         return False
 
     # Ensure logs directory exists
