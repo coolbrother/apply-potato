@@ -36,7 +36,7 @@ A self-hosted, AI-powered job tracking system that automatically scrapes GitHub 
 - Get instant Discord notifications on your phone when dream company jobs are added to your sheet.
 
 <p align="center">
-  <img src="./assets/ApplyPotatoDicordJobAlert.gif" width="300" alt="Discord notification on mobile" />
+  <img src="./assets/ApplyPotatoDiscordJobAlert.gif" width="300" alt="Discord notification on mobile" />
 </p>
 
 - As you apply and receive responses, the app parses your Gmail to detect confirmations, OA invites, interviews, and offers—updating your sheet automatically.
