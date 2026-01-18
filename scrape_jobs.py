@@ -180,6 +180,7 @@ class JobScraper:
         # Retries with increasing render delay when extraction fails
         extracted_jobs = None
         final_url = None
+        content = None
         max_attempts = self.config.max_retries
 
         for attempt in range(1, max_attempts + 1):
@@ -212,12 +213,16 @@ class JobScraper:
             if self.dedup_checker.job_exists(final_url):
                 logger.info(f"  Skipping: duplicate (already in Sheets)")
                 self.stats["duplicates_skipped"] += 1
+                # Mark source as seen so we don't re-scrape next run
+                self.dedup_checker.mark_source_seen(listing.url)
                 return None  # Skipped, doesn't count toward limit
 
             # Check if previously filtered (saves AI tokens)
             if self.dedup_checker.is_filtered(final_url):
                 logger.info(f"  Skipping: previously filtered")
                 self.stats["filtered_skipped"] += 1
+                # Mark source as seen so we don't re-scrape next run
+                self.dedup_checker.mark_source_seen(listing.url)
                 return None  # Skipped, doesn't count toward limit
 
             # Extract job data with AI
@@ -234,6 +239,14 @@ class JobScraper:
         if not extracted_jobs:
             logger.warning(f"  Failed to extract jobs after {max_attempts} attempts")
             self.stats["extraction_failures"] += 1
+            # Save extraction failure for review
+            self.dedup_checker.save_extraction_failure(
+                url=final_url or job_url,
+                company=listing.company,
+                title=listing.title,
+                content=content or "",
+                reason="AI extraction returned no valid jobs"
+            )
             return False
 
         # Process each extracted job (some postings have multiple positions)

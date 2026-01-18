@@ -29,13 +29,14 @@ VIEWPORT_WIDTHS = [1280, 1366, 1440, 1536, 1920]
 VIEWPORT_HEIGHTS = [720, 768, 800, 864, 900, 1080]
 
 # Platform-aware user agent to match OS signals
+# Chrome 131 is current as of Jan 2026
 _system = platform.system()
 if _system == "Darwin":
-    USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+    USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 elif _system == "Windows":
-    USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+    USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 else:
-    USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+    USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
 
 class PlaywrightScraper:
@@ -82,6 +83,10 @@ class PlaywrightScraper:
         # Ensure profile directory exists
         BROWSER_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
 
+        # Randomize viewport once at launch (not per-page) to avoid fingerprinting
+        width = random.choice(VIEWPORT_WIDTHS)
+        height = random.choice(VIEWPORT_HEIGHTS)
+
         # Launch persistent context with anti-detection settings
         self._context = await self._playwright.chromium.launch_persistent_context(
             user_data_dir=str(BROWSER_PROFILE_DIR),
@@ -90,6 +95,7 @@ class PlaywrightScraper:
             user_agent=USER_AGENT,
             locale="en-US",
             timezone_id="America/New_York",
+            viewport={"width": width, "height": height},
             args=["--disable-blink-features=AutomationControlled"],
         )
 
@@ -146,11 +152,6 @@ class PlaywrightScraper:
             try:
                 logger.debug(f"Fetching (attempt {attempt}/{self.config.max_retries}): {url}")
 
-                # Randomize viewport to avoid fingerprinting
-                width = random.choice(VIEWPORT_WIDTHS)
-                height = random.choice(VIEWPORT_HEIGHTS)
-                await self._page.set_viewport_size({"width": width, "height": height})
-
                 # Navigate and wait for page load
                 # Using "load" instead of "networkidle" because some sites
                 # (like Lever apply pages) have continuous network activity
@@ -200,7 +201,8 @@ class PlaywrightScraper:
                 )
 
                 if is_blocked:
-                    logger.warning(f"Anti-scraping block detected for {url} (403/Forbidden)")
+                    logger.warning(f"Anti-scraping block detected for {url}")
+                    logger.warning(f"Block page content ({len(content)} chars):\n{content[:2000]}")
 
                 # Log success with content preview
                 content_len = len(content)
