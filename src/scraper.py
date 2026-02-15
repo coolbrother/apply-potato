@@ -163,14 +163,25 @@ class PlaywrightScraper:
                 # Capture final URL after redirects
                 final_url = self._page.url
 
+                # Check for Simplify job pages - click "Full Job Posting" tab
+                is_simplify = "simplify.jobs/p/" in final_url.lower()
+
                 # Check for Greenhouse embedded job pages (gh_jid in URL)
-                # These sites show a job listing, then load specific job in iframe/modal
                 parsed = urlparse(url)
                 query_params = parse_qs(parsed.query)
                 is_greenhouse_embed = "gh_jid" in query_params
 
                 content = None
-                if is_greenhouse_embed:
+                if is_simplify:
+                    try:
+                        tab = self._page.get_by_role("button", name="Full Job Posting")
+                        await tab.click(timeout=5000)
+                        await asyncio.sleep(actual_render_delay)
+                        logger.debug("Clicked 'Full Job Posting' tab on Simplify page")
+                    except Exception as e:
+                        logger.debug(f"No 'Full Job Posting' tab on Simplify page: {e}")
+
+                elif is_greenhouse_embed:
                     # Try to find and extract from Greenhouse iframe
                     try:
                         # Wait for Greenhouse iframe to appear

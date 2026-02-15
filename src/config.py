@@ -19,6 +19,13 @@ class GitHubRepo:
 
 
 @dataclass
+class NewsletterSource:
+    """Newsletter source configuration."""
+    name: str              # e.g., "simplify"
+    sender_emails: List[str]  # e.g., ["noreply@simplify.jobs"]
+
+
+@dataclass
 class DiscordConfig:
     """Discord notification configuration."""
     enabled: bool
@@ -68,6 +75,11 @@ class Config:
     # Job Sources
     github_repos: List[GitHubRepo]
     job_age_limit_days: int  # Only process jobs posted within this many days
+
+    # Newsletter Sources
+    newsletter_sources: List[NewsletterSource]
+    newsletter_lookback_days: int
+    newsletter_enabled: bool
 
     # Schedule Settings
     scrape_interval_minutes: int
@@ -137,6 +149,29 @@ def _parse_github_repos(value: str) -> List[GitHubRepo]:
             owner_repo, branch = item, "main"  # Default to main
         repos.append(GitHubRepo(owner_repo=owner_repo.strip(), branch=branch.strip()))
     return repos
+
+
+def _parse_newsletter_sources(value: str) -> List[NewsletterSource]:
+    """
+    Parse NEWSLETTER_SOURCES with format: name|email1;email2,name2|email3
+
+    Example: simplify|noreply@simplify.jobs,levels-fyi|alerts@levels.fyi
+    """
+    sources = []
+    if not value or not value.strip():
+        return sources
+
+    for item in value.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        if "|" not in item:
+            continue
+        name, emails_str = item.split("|", 1)
+        emails = [e.strip() for e in emails_str.split(";") if e.strip()]
+        if name.strip() and emails:
+            sources.append(NewsletterSource(name=name.strip(), sender_emails=emails))
+    return sources
 
 
 def _get_required(key: str) -> str:
@@ -318,6 +353,9 @@ def load_config(env_path: Optional[Path] = None) -> Config:
         gemini_max_output_tokens=_get_optional_int("GEMINI_MAX_OUTPUT_TOKENS"),
         github_repos=_parse_github_repos(_get_required("GITHUB_REPOS")),
         job_age_limit_days=min(_get_int("JOB_AGE_LIMIT_DAYS", 7), 30),  # Cap at 30 days max
+        newsletter_sources=_parse_newsletter_sources(_get_optional("NEWSLETTER_SOURCES", "")),
+        newsletter_lookback_days=_get_int("NEWSLETTER_LOOKBACK_DAYS", 7),
+        newsletter_enabled=_get_optional("NEWSLETTER_ENABLED", "true").lower() in ("true", "1", "yes"),
         scrape_interval_minutes=_get_int("SCRAPE_INTERVAL_MINUTES", 30),
         gmail_check_interval_minutes=_get_int("GMAIL_CHECK_INTERVAL_MINUTES", 10),
         gmail_lookback_days=_get_int("GMAIL_LOOKBACK_DAYS", 1),
