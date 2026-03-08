@@ -95,8 +95,11 @@ scraped_content/
 extracted_jobs/
 
 # Session/temp files
-# (SESSION.md is tracked for development history)
+*.md
+!README.md
 
+# Browser profile (persistent Playwright session with cookies/login)
+browser-profile/
 
 # ===================
 # Testing

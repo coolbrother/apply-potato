@@ -29,6 +29,7 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 from src.config import get_config, Config
 from src.logging_config import setup_logging
 from src.github_parser import GitHubParser, JobListing
+from src.newsletter_parser import NewsletterParser
 from src.scraper import PlaywrightScraper
 from src.ai_extractor import AIExtractor, ExtractedJob
 from src.deduplication import DeduplicationChecker, get_dedup_checker, normalize_url
@@ -180,6 +181,7 @@ class JobScraper:
         # Retries with increasing render delay when extraction fails
         extracted_jobs = None
         final_url = None
+        content = None
         max_attempts = self.config.max_retries
 
         for attempt in range(1, max_attempts + 1):
@@ -212,12 +214,16 @@ class JobScraper:
             if self.dedup_checker.job_exists(final_url):
                 logger.info(f"  Skipping: duplicate (already in Sheets)")
                 self.stats["duplicates_skipped"] += 1
+                # Mark source as seen so we don't re-scrape next run
+                self.dedup_checker.mark_source_seen(listing.url)
                 return None  # Skipped, doesn't count toward limit
 
             # Check if previously filtered (saves AI tokens)
             if self.dedup_checker.is_filtered(final_url):
                 logger.info(f"  Skipping: previously filtered")
                 self.stats["filtered_skipped"] += 1
+                # Mark source as seen so we don't re-scrape next run
+                self.dedup_checker.mark_source_seen(listing.url)
                 return None  # Skipped, doesn't count toward limit
 
             # Extract job data with AI
@@ -234,6 +240,14 @@ class JobScraper:
         if not extracted_jobs:
             logger.warning(f"  Failed to extract jobs after {max_attempts} attempts")
             self.stats["extraction_failures"] += 1
+            # Save extraction failure for review
+            self.dedup_checker.save_extraction_failure(
+                url=final_url or job_url,
+                company=listing.company,
+                title=listing.title,
+                content=content or "",
+                reason="AI extraction returned no valid jobs"
+            )
             return False
 
         # Process each extracted job (some postings have multiple positions)
@@ -294,12 +308,13 @@ class JobScraper:
 
         return added_any
 
-    async def run(self, limit: Optional[int] = None) -> dict:
+    async def run(self, limit: Optional[int] = None, newsletter_only: bool = False) -> dict:
         """
         Run the job scraping pipeline.
 
         Args:
             limit: Optional maximum number of new jobs to process
+            newsletter_only: If True, only process newsletter sources (skip GitHub)
 
         Returns:
             Dict with statistics about the run
@@ -316,15 +331,29 @@ class JobScraper:
         logger.info("Refreshing deduplication cache from Google Sheets...")
         self.dedup_checker.refresh_cache()
 
-        # Fetch job listings from GitHub repos
-        repo_list = [f"{r.owner_repo}@{r.branch}" for r in self.config.github_repos]
-        logger.info(f"Fetching jobs from GitHub repos: {repo_list}")
-        try:
-            all_listings = self.github_parser.fetch_all_jobs()
-            logger.info(f"Found {len(all_listings)} total listings")
-        except Exception as e:
-            logger.error(f"Failed to fetch jobs from GitHub: {e}")
-            all_listings = []
+        # Fetch job listings from GitHub repos (unless newsletter-only mode)
+        all_listings = []
+        if not newsletter_only:
+            repo_list = [f"{r.owner_repo}@{r.branch}" for r in self.config.github_repos]
+            logger.info(f"Fetching jobs from GitHub repos: {repo_list}")
+            try:
+                all_listings = self.github_parser.fetch_all_jobs()
+                logger.info(f"Found {len(all_listings)} GitHub listings")
+            except Exception as e:
+                logger.error(f"Failed to fetch jobs from GitHub: {e}")
+                all_listings = []
+
+        # Fetch job listings from newsletters if enabled
+        if self.config.newsletter_enabled and self.config.newsletter_sources:
+            logger.info("")  # Visual separator
+            logger.info("Fetching jobs from newsletter sources...")
+            try:
+                newsletter_parser = NewsletterParser(self.config)
+                newsletter_listings = newsletter_parser.fetch_all_jobs()
+                logger.info(f"Found {len(newsletter_listings)} newsletter listings")
+                all_listings.extend(newsletter_listings)
+            except Exception as e:
+                logger.error(f"Failed to fetch jobs from newsletters: {e}")
 
         self.stats["listings_found"] = len(all_listings)
         logger.info(f"Total listings found: {len(all_listings)}")
@@ -378,13 +407,13 @@ class JobScraper:
         return self.stats
 
 
-def run_once(limit: Optional[int] = None):
+def run_once(limit: Optional[int] = None, newsletter_only: bool = False):
     """Run the pipeline once."""
     config = get_config()
     setup_logging("scrape", config, console=True)
 
     with JobScraper(config) as scraper:
-        stats = asyncio.run(scraper.run(limit=limit))
+        stats = asyncio.run(scraper.run(limit=limit, newsletter_only=newsletter_only))
 
     return stats
 
@@ -442,6 +471,8 @@ def main():
     parser = argparse.ArgumentParser(description="ApplyPotato Job Scraper")
     parser.add_argument("--scheduled", action="store_true", help="Run on schedule")
     parser.add_argument("--limit", type=int, help="Max jobs to process")
+    parser.add_argument("--newsletter-only", action="store_true",
+                        help="Only process newsletter sources (skip GitHub)")
     parser.add_argument("--clear-filtered", action="store_true",
                         help="Clear filtered jobs cache (use when profile changes)")
     parser.add_argument("--clear-seen", action="store_true",
@@ -455,7 +486,7 @@ def main():
     elif args.scheduled:
         run_scheduled()
     else:
-        run_once(limit=args.limit)
+        run_once(limit=args.limit, newsletter_only=args.newsletter_only)
 
 
 if __name__ == "__main__":

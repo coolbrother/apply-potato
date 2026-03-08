@@ -28,6 +28,7 @@ SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
 
 # File to track processed emails (stored in data/ directory)
 PROCESSED_EMAILS_FILENAME = "processed_emails.json"
+PROCESSED_NEWSLETTER_EMAILS_FILENAME = "processed_newsletter_emails.json"
 
 # Maximum number of processed IDs to keep (prevents file from growing forever)
 MAX_PROCESSED_IDS = 1000
@@ -335,6 +336,160 @@ class GmailClient:
 
         logger.info(f"Fetched {len(emails)} new emails (after filtering processed)")
         return emails
+
+    def _load_processed_ids_from_file(self, filename: str) -> set:
+        """Load processed email IDs from a specific file."""
+        processed_file = self.config.data_dir / filename
+        if processed_file.exists():
+            try:
+                with open(processed_file, "r") as f:
+                    data = json.load(f)
+                    return set(data.get("processed_ids", []))
+            except (json.JSONDecodeError, IOError) as e:
+                logger.warning(f"Failed to load {filename}: {e}")
+        return set()
+
+    def _save_processed_ids_to_file(self, filename: str, ids: set) -> None:
+        """Save processed email IDs to a specific file."""
+        processed_file = self.config.data_dir / filename
+
+        # Prune to max size if needed
+        if len(ids) > MAX_PROCESSED_IDS:
+            ids = set(list(ids)[-MAX_PROCESSED_IDS:])
+
+        data = {
+            "processed_ids": list(ids),
+            "last_check": datetime.now().isoformat()
+        }
+
+        try:
+            with open(processed_file, "w") as f:
+                json.dump(data, f, indent=2)
+        except IOError as e:
+            logger.error(f"Failed to save {filename}: {e}")
+
+    def fetch_emails_by_senders(
+        self,
+        senders: List[str],
+        hours: int,
+        skip_processed: bool = True,
+    ) -> List[EmailMessage]:
+        """
+        Fetch emails from specific senders within a time window.
+
+        Args:
+            senders: List of sender email addresses to filter by.
+            hours: How many hours back to search.
+            skip_processed: If True, skip emails already processed (tracked separately from status emails).
+
+        Returns:
+            List of EmailMessage objects from the specified senders.
+        """
+        if not senders:
+            return []
+
+        service = self._get_service()
+
+        # Build query: after:{date} from:({sender1} OR {sender2})
+        after_date = datetime.now() - timedelta(hours=hours)
+        after_str = after_date.strftime("%Y/%m/%d")
+        senders_query = " OR ".join(f"from:{s}" for s in senders)
+        query = f"after:{after_str} ({senders_query})"
+
+        logger.debug(f"Newsletter Gmail query: {query}")
+
+        # Load newsletter-specific processed IDs
+        newsletter_processed = self._load_processed_ids_from_file(PROCESSED_NEWSLETTER_EMAILS_FILENAME)
+
+        emails = []
+        page_token = None
+
+        while True:
+            try:
+                results = service.users().messages().list(
+                    userId="me",
+                    q=query,
+                    pageToken=page_token,
+                    maxResults=50
+                ).execute()
+
+                messages = results.get("messages", [])
+
+                for msg_info in messages:
+                    msg_id = msg_info["id"]
+
+                    # Skip already processed (unless skip_processed is False)
+                    if skip_processed and msg_id in newsletter_processed:
+                        logger.debug(f"Skipping already processed newsletter: {msg_id}")
+                        continue
+
+                    # Fetch full message
+                    try:
+                        message = service.users().messages().get(
+                            userId="me",
+                            id=msg_id,
+                            format="full"
+                        ).execute()
+                    except HttpError as e:
+                        logger.warning(f"Failed to fetch message {msg_id}: {e}")
+                        continue
+
+                    # Parse headers
+                    headers = {h["name"].lower(): h["value"]
+                               for h in message.get("payload", {}).get("headers", [])}
+
+                    subject = headers.get("subject", "(No Subject)")
+                    sender_raw = headers.get("from", "")
+                    date_str = headers.get("date", "")
+
+                    sender_name, sender_email = self._parse_email_address(sender_raw)
+
+                    # Parse date
+                    try:
+                        msg_date = parsedate_to_datetime(date_str)
+                    except (ValueError, TypeError):
+                        msg_date = datetime.now()
+
+                    # Get body
+                    plain_text, html_text = self._get_email_body(message.get("payload", {}))
+
+                    # Get Gmail category from labels
+                    label_ids = message.get("labelIds", [])
+                    category = "Unknown"
+                    for label_id in label_ids:
+                        if label_id in CATEGORY_LABELS:
+                            category = CATEGORY_LABELS[label_id]
+                            break
+
+                    email_msg = EmailMessage(
+                        message_id=msg_id,
+                        subject=subject,
+                        sender=sender_name or sender_email,
+                        sender_email=sender_email,
+                        date=msg_date,
+                        body_text=plain_text,
+                        body_html=html_text,
+                        category=category
+                    )
+                    emails.append(email_msg)
+
+                # Check for more pages
+                page_token = results.get("nextPageToken")
+                if not page_token:
+                    break
+
+            except HttpError as e:
+                logger.error(f"Gmail API error: {e}")
+                break
+
+        logger.info(f"Fetched {len(emails)} newsletter emails from senders: {senders}")
+        return emails
+
+    def mark_newsletter_as_processed(self, message_id: str) -> None:
+        """Mark a newsletter email as processed (separate tracking from status emails)."""
+        newsletter_processed = self._load_processed_ids_from_file(PROCESSED_NEWSLETTER_EMAILS_FILENAME)
+        newsletter_processed.add(message_id)
+        self._save_processed_ids_to_file(PROCESSED_NEWSLETTER_EMAILS_FILENAME, newsletter_processed)
 
 
 # Singleton client instance

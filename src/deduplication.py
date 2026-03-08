@@ -23,6 +23,9 @@ FILTERED_JOBS_FILENAME = "filtered_jobs.json"
 # File to track seen source URLs (stored in data/ directory)
 SEEN_SOURCES_FILENAME = "seen_sources.json"
 
+# File to track extraction failures (stored in data/ directory)
+EXTRACTION_FAILURES_FILENAME = "extraction_failures.json"
+
 
 # Tracking parameters to remove from URLs
 TRACKING_PARAMS = {
@@ -117,8 +120,10 @@ class DeduplicationChecker:
         self._cached_urls: Optional[set] = None
         self._filtered_urls: set = set()
         self._seen_source_urls: dict = {}  # {normalized_url: timestamp_str}
+        self._extraction_failures: list = []  # [{url, timestamp, company, title, content_preview, reason}]
         self._load_filtered_jobs()
         self._load_seen_sources()
+        self._load_extraction_failures()
 
     @property
     def sheets_client(self) -> SheetsClient:
@@ -344,6 +349,71 @@ class DeduplicationChecker:
         self._seen_source_urls = {}
         self._save_seen_sources()
         logger.info("Cleared seen sources cache")
+
+    # =========================================================================
+    # Extraction Failures Tracking
+    # =========================================================================
+
+    def _load_extraction_failures(self) -> None:
+        """Load extraction failures from file."""
+        failures_file = self.config.data_dir / EXTRACTION_FAILURES_FILENAME
+        if failures_file.exists():
+            try:
+                with open(failures_file, "r") as f:
+                    data = json.load(f)
+                    self._extraction_failures = data.get("failures", [])
+                    logger.debug(f"Loaded {len(self._extraction_failures)} extraction failures")
+            except (json.JSONDecodeError, IOError) as e:
+                logger.warning(f"Failed to load extraction failures file: {e}")
+                self._extraction_failures = []
+        else:
+            self._extraction_failures = []
+
+    def _save_extraction_failures(self) -> None:
+        """Save extraction failures to file."""
+        failures_file = self.config.data_dir / EXTRACTION_FAILURES_FILENAME
+
+        data = {
+            "failures": self._extraction_failures,
+            "last_updated": datetime.now().isoformat()
+        }
+
+        try:
+            with open(failures_file, "w") as f:
+                json.dump(data, f, indent=2)
+        except IOError as e:
+            logger.error(f"Failed to save extraction failures file: {e}")
+
+    def save_extraction_failure(self, url: str, company: str, title: str,
+                                 content: str, reason: str) -> None:
+        """
+        Save an extraction failure for later review.
+
+        Args:
+            url: Job URL that failed extraction
+            company: Company name from listing
+            title: Job title from listing
+            content: Page content that was scraped
+            reason: Why extraction failed
+        """
+        failure = {
+            "url": url,
+            "company": company,
+            "title": title,
+            "content_preview": content[:500] if content else "",
+            "content_length": len(content) if content else 0,
+            "reason": reason,
+            "timestamp": datetime.now().isoformat()
+        }
+        self._extraction_failures.append(failure)
+        self._save_extraction_failures()
+        logger.debug(f"Saved extraction failure: {url}")
+
+    def clear_extraction_failures(self) -> None:
+        """Clear all extraction failures."""
+        self._extraction_failures = []
+        self._save_extraction_failures()
+        logger.info("Cleared extraction failures")
 
 
 # Singleton instance
