@@ -17,6 +17,9 @@ logger = logging.getLogger(__name__)
 
 # Class standing levels (higher = more senior)
 CLASS_STANDING_LEVELS = {
+    "undergraduate": 1,
+    "undergrad": 1,
+    "bachelor": 1,  # covers bachelor's, bachelors
     "freshman": 1,
     "first year": 1,
     "first-year": 1,
@@ -45,8 +48,11 @@ RISING_PATTERN = re.compile(r"rising\s+(\w+)", re.IGNORECASE)
 ENTERING_PATTERN = re.compile(r"entering\s+(\w+)(?:\s+year)?", re.IGNORECASE)
 PENULTIMATE_PATTERN = re.compile(r"penultimate\s+year", re.IGNORECASE)
 FINAL_YEAR_PATTERN = re.compile(r"final\s+year", re.IGNORECASE)
-# "Matriculated in undergraduate" = enrolled in any undergrad program
-UNDERGRADUATE_PATTERN = re.compile(r"(matriculated|enrolled|pursuing).{0,20}undergraduate", re.IGNORECASE)
+# "Matriculated/enrolled in undergraduate/bachelor's/college degree" = any undergrad student (level 1)
+UNDERGRADUATE_PATTERN = re.compile(
+    r"(matriculated|enrolled|pursuing).{0,30}(undergraduate|bachelor|college\s+degree|degree\s+program)",
+    re.IGNORECASE,
+)
 # "Current student" = any currently enrolled student (level 1)
 CURRENT_STUDENT_PATTERN = re.compile(r"current\s+student|currently\s+(enrolled|a\s+student)", re.IGNORECASE)
 
@@ -117,10 +123,10 @@ def _parse_class_standing(text: str) -> Optional[int]:
     if FINAL_YEAR_PATTERN.search(text_lower):
         return 4  # Senior
 
-    # Direct match
-    for standing, level in CLASS_STANDING_LEVELS.items():
-        if standing in text_lower:
-            return level
+    # Collect all direct matches and return the minimum (OR semantics — satisfying any one is enough)
+    matched_levels = [level for standing, level in CLASS_STANDING_LEVELS.items() if standing in text_lower]
+    if matched_levels:
+        return min(matched_levels)
 
     return None
 

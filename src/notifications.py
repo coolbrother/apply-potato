@@ -4,45 +4,97 @@ Sends Discord alerts via webhook when dream company jobs are found or status cha
 """
 
 import logging
-from typing import Optional
+from typing import List, Optional
 
 import httpx
-from rapidfuzz import fuzz
 
 from .config import get_config, Config
 
 
 logger = logging.getLogger(__name__)
 
+_LEGAL_SUFFIXES = {
+    " llc", " inc", " inc.", " corp", " corp.", " co.", " ltd",
+    " limited", " technologies", " technology", " corporation",
+}
 
-def is_dream_company(company: str, dream_companies: list, threshold: int) -> bool:
+
+def _normalize_company(name: str) -> str:
+    """Lowercase, strip commas, and remove common legal suffixes."""
+    s = name.lower().strip().replace(",", "")
+    for suffix in _LEGAL_SUFFIXES:
+        if s.endswith(suffix):
+            s = s[: -len(suffix)].strip()
+    return s
+
+
+def is_dream_company(
+    company: str,
+    dream_companies: List[str],
+    salary_min: Optional[float] = None,
+    salary_max: Optional[float] = None,
+    salary_period: Optional[str] = None,
+    min_salary_annual: Optional[float] = None,
+    min_salary_hourly: Optional[float] = None,
+) -> bool:
     """
-    Check if a company matches any dream company using fuzzy matching.
+    Check if a job qualifies as a "Dream Company" job.
 
-    Args:
-        company: Company name from job listing
-        dream_companies: List of dream company names
-        threshold: Fuzzy match threshold (0-100)
+    A job is a Dream Company job if either:
+    - The company is in the user's dream companies list (exact match), OR
+    - The job's salary meets the configured threshold
 
-    Returns:
-        True if company matches any dream company
+    Salary params are optional — if omitted, only the name list is checked.
     """
-    if not company or not dream_companies:
+    if not company:
+        return False
+    company_norm = _normalize_company(company)
+    if dream_companies and any(_normalize_company(d) == company_norm for d in dream_companies):
+        return True
+    # Only check salary threshold if thresholds are actually configured
+    if min_salary_annual or min_salary_hourly:
+        return meets_salary_threshold(salary_min, salary_max, salary_period, min_salary_annual, min_salary_hourly)
+    return False
+
+
+def meets_salary_threshold(
+    salary_min: Optional[float],
+    salary_max: Optional[float],
+    salary_period: Optional[str],
+    config_annual: Optional[float],
+    config_hourly: Optional[float],
+) -> bool:
+    """
+    Returns True if the job salary can be confirmed to meet the configured threshold.
+
+    No threshold configured → True (passes).
+    Missing salary info → False (can't confirm, don't notify).
+    Unknown period → assume yearly.
+    """
+    if not config_annual and not config_hourly:
+        return False  # No threshold configured
+    if salary_min is None and salary_max is None:
+        return False  # No salary info — can't confirm threshold met
+
+    salary = salary_max or salary_min
+    if not salary:
         return False
 
-    company_lower = company.lower().strip()
-    for dream in dream_companies:
-        dream_lower = dream.lower().strip()
-        # Substring match (fast path) - handles "Google" matching "Google LLC"
-        if dream_lower in company_lower or company_lower in dream_lower:
-            return True
-        # Fuzzy match (handles typos and variations like "Qualcomm" vs "Qualcomm Inc.")
-        if fuzz.ratio(company_lower, dream_lower) >= threshold:
-            return True
-        # Token-based matching for word-level similarity
-        # Avoids false positives like "Apple" matching "Applied Concepts"
-        if fuzz.token_set_ratio(company_lower, dream_lower) >= threshold:
-            return True
+    period = (salary_period or "yearly").lower()
+    if period == "hourly":
+        annual = salary * 2080
+        hourly = salary
+    elif period == "monthly":
+        annual = salary * 12
+        hourly = annual / 2080
+    else:  # yearly or unknown
+        annual = salary
+        hourly = salary / 2080
+
+    if config_annual and annual >= config_annual:
+        return True
+    if config_hourly and hourly >= config_hourly:
+        return True
     return False
 
 
@@ -110,11 +162,6 @@ def notify_dream_company_job(company: str, position: str, url: str = "") -> bool
     """
     Send Discord notification for a new dream company job.
 
-    Args:
-        company: Company name
-        position: Job position/title
-        url: Job posting URL
-
     Returns:
         True if message was sent successfully
     """
@@ -122,8 +169,6 @@ def notify_dream_company_job(company: str, position: str, url: str = "") -> bool
     if not config.discord.enabled:
         return False
 
-    # Format message with emoji for visibility
-    # Separator at start creates space after previous message's preview card
     message = f"───────────────\n\n🚀 **New Dream Company Job!**\n**{company}** - {position}"
     if url:
         message += f"\n{url}"
@@ -140,12 +185,6 @@ def notify_dream_company_job(company: str, position: str, url: str = "") -> bool
 def notify_status_change(company: str, position: str, new_status: str, url: str = "") -> bool:
     """
     Send Discord notification when a dream company job status changes.
-
-    Args:
-        company: Company name
-        position: Job position/title
-        new_status: New status (OA, Phone, Technical, Offer, Rejected)
-        url: Job posting URL
 
     Returns:
         True if message was sent successfully

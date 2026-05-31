@@ -8,6 +8,7 @@
 .env
 .env.local
 .env.*.local
+applicant_info.txt
 
 # Auth folder contains OAuth credentials and tokens
 # credentials.json - downloaded from Google Cloud Console
@@ -88,11 +89,17 @@ tools/
 logs/
 *.log
 
+# Auto-apply generated documents
+output/
+
 # Scraped content (test output)
 scraped_content/
 
 # Extracted jobs (test output)
 extracted_jobs/
+
+# Node dependencies (skills use package.json — run npm install to restore)
+skills/**/node_modules/
 
 # Session/temp files
 *.md

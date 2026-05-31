@@ -46,6 +46,8 @@ class TestParseClassStanding:
         ("Enrolled in undergraduate program", 1),
         ("Pursuing undergraduate degree", 1),
         ("matriculated in an undergraduate program in good standing", 1),
+        ("Are enrolled in a Bachelor's degree or above", 1),
+        ("Must be enrolled in a college degree program", 1),
         # Edge cases
         ("", None),
         ("Unknown", None),

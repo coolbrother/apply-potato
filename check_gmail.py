@@ -209,11 +209,7 @@ class GmailChecker:
 
             # Send Discord notification if dream company
             if self.config.discord.enabled and job.company:
-                if is_dream_company(
-                    job.company,
-                    self.config.user.target_companies,
-                    self.config.discord.dream_company_match_threshold
-                ):
+                if is_dream_company(job.company, self.config.user.target_companies):
                     logger.info(f"  Dream company status change! Sending Discord notification...")
                     try:
                         notify_status_change(job.company, job.position, new_status, job.position_url or "")

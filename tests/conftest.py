@@ -23,7 +23,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from bs4 import BeautifulSoup
 
-from src.config import Config, UserProfile, DiscordConfig, GitHubRepo
+from src.config import Config, UserProfile, DiscordConfig, AutoApplyConfig, GitHubRepo
 from src.github_parser import JobListing
 from src.gmail import EmailMessage
 from src.sheets import SheetsClient
@@ -140,7 +140,8 @@ def test_config(test_user_profile: UserProfile, test_google_sheet_id: str) -> Co
             "Offer": "#C8E6C9",
             "Rejected": "#FFCDD2",
         },
-        discord=DiscordConfig(enabled=False, webhook_url="", dream_company_match_threshold=80),
+        discord=DiscordConfig(enabled=False, webhook_url="", form_fill_webhook_url="", dream_company_min_salary_annual=None, dream_company_min_salary_hourly=None),
+        auto_apply=AutoApplyConfig(enabled=False, resume_path=None, background_path=None, output_dir=PROJECT_ROOT / "output", provider="claude", detect_requirements=False),
         max_retries=3,
         page_timeout_seconds=30,
         render_delay_seconds=1.0,
@@ -372,7 +373,7 @@ def clean_test_sheet(sheets_client):
     try:
         result = service.spreadsheets().values().get(
             spreadsheetId=sheet_id,
-            range="Jobs!A:R"
+            range="Jobs!A:T"
         ).execute()
         row_count = len(result.get("values", []))
     except Exception:
@@ -436,7 +437,8 @@ def test_config_mock_sheets(test_user_profile: UserProfile) -> Config:
             "Offer": "#C8E6C9",
             "Rejected": "#FFCDD2",
         },
-        discord=DiscordConfig(enabled=False, webhook_url="", dream_company_match_threshold=80),
+        discord=DiscordConfig(enabled=False, webhook_url="", form_fill_webhook_url="", dream_company_min_salary_annual=None, dream_company_min_salary_hourly=None),
+        auto_apply=AutoApplyConfig(enabled=False, resume_path=None, background_path=None, output_dir=PROJECT_ROOT / "output", provider="claude", detect_requirements=False),
         max_retries=3,
         page_timeout_seconds=30,
         render_delay_seconds=1.0,

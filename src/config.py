@@ -29,8 +29,21 @@ class NewsletterSource:
 class DiscordConfig:
     """Discord notification configuration."""
     enabled: bool
-    webhook_url: str
-    dream_company_match_threshold: int  # 0-100, default 80
+    webhook_url: str              # dream-company job alerts
+    form_fill_webhook_url: str    # fill-form auto-run summaries (separate channel)
+    dream_company_min_salary_annual: Optional[float]  # None = no threshold
+    dream_company_min_salary_hourly: Optional[float]  # None = no threshold
+
+
+@dataclass
+class AutoApplyConfig:
+    """Auto-apply document generation configuration."""
+    enabled: bool
+    resume_path: Optional[Path]
+    background_path: Optional[Path]
+    output_dir: Path
+    provider: str          # "claude" | "openai" | "gemini"
+    detect_requirements: bool
 
 
 @dataclass
@@ -94,6 +107,15 @@ class Config:
 
     # Discord Notifications
     discord: DiscordConfig
+
+    # Auto-Apply Document Generation
+    auto_apply: AutoApplyConfig
+
+    # Job Description Output (Phase 1 — saved per job, committed to Resume repo)
+    job_desc_output_dir: Path
+
+    # Base resume for document generation (Phase 2)
+    base_resume_path: Path
 
     # Advanced Settings
     max_retries: int
@@ -329,16 +351,73 @@ def load_config(env_path: Optional[Path] = None) -> Config:
     # Parse Discord notification configuration
     discord_enabled = _get_optional("DISCORD_ENABLED", "false").lower() in ("true", "1", "yes")
     discord_webhook = _get_optional("DISCORD_WEBHOOK_URL", "")
-    discord_threshold = _get_int("DREAM_COMPANY_MATCH_THRESHOLD", 80)
 
-    # Discord is only enabled if webhook URL is configured
-    discord_actually_enabled = discord_enabled and bool(discord_webhook)
+    # Salary thresholds: None if unset or "0"
+    def _parse_salary_threshold(key: str, default: float) -> Optional[float]:
+        raw = _get_optional(key, str(default))
+        if not raw or raw.strip() in ("0", ""):
+            return None
+        try:
+            val = float(raw)
+            return val if val > 0 else None
+        except ValueError:
+            return None
 
     discord_config = DiscordConfig(
-        enabled=discord_actually_enabled,
+        enabled=discord_enabled and bool(discord_webhook),
         webhook_url=discord_webhook,
-        dream_company_match_threshold=max(0, min(100, discord_threshold)),  # Clamp to 0-100
+        form_fill_webhook_url=_get_optional("FORM_FILL_DISCORD_WEBHOOK", ""),
+        dream_company_min_salary_annual=_parse_salary_threshold("DREAM_COMPANY_MIN_SALARY_ANNUAL", 100000),
+        dream_company_min_salary_hourly=_parse_salary_threshold("DREAM_COMPANY_MIN_SALARY_HOURLY", 50),
     )
+
+    # Parse auto-apply configuration
+    auto_apply_enabled = _get_optional("AUTO_APPLY_ENABLED", "false").lower() in ("true", "1", "yes")
+
+    def _resolve_path(key: str) -> Optional[Path]:
+        raw = _get_optional(key, "")
+        if not raw:
+            return None
+        p = Path(raw)
+        return p if p.is_absolute() else base_dir / p
+
+    resume_path = _resolve_path("AUTO_APPLY_RESUME_PATH")
+    background_path = _resolve_path("AUTO_APPLY_BACKGROUND_PATH")
+
+    raw_output_dir = _get_optional("AUTO_APPLY_OUTPUT_DIR", "./output")
+    output_dir = Path(raw_output_dir)
+    if not output_dir.is_absolute():
+        output_dir = base_dir / output_dir
+
+    auto_apply_provider = _get_optional("AUTO_APPLY_PROVIDER", "claude").lower()
+    if auto_apply_provider not in ("claude", "openai", "gemini"):
+        print(f"WARNING: AUTO_APPLY_PROVIDER must be 'claude', 'openai', or 'gemini', got '{auto_apply_provider}'. Defaulting to 'claude'.")
+        auto_apply_provider = "claude"
+
+    auto_apply_config = AutoApplyConfig(
+        enabled=auto_apply_enabled,
+        resume_path=resume_path,
+        background_path=background_path,
+        output_dir=output_dir,
+        provider=auto_apply_provider,
+        detect_requirements=_get_optional("AUTO_APPLY_DETECT_REQUIREMENTS", "true").lower() in ("true", "1", "yes"),
+    )
+
+    # Job description output directory (Phase 1 — resume git repo)
+    raw_job_desc_dir = _get_optional("JOB_DESC_OUTPUT_DIR", "/Path/To/Your/Resume")
+    job_desc_output_dir = Path(raw_job_desc_dir)
+
+    # Base resume path (Phase 2 — required, no default)
+    raw_base_resume = _get_optional("BASE_RESUME_PATH", "")
+    if not raw_base_resume:
+        print("ERROR: BASE_RESUME_PATH is not set in .env.")
+        print("Set it to the full path of your base resume .docx file.")
+        sys.exit(1)
+    base_resume_path = Path(raw_base_resume)
+    if not base_resume_path.exists():
+        print(f"ERROR: BASE_RESUME_PATH file not found: {base_resume_path}")
+        print("Ensure the file exists before running.")
+        sys.exit(1)
 
     # Build config object
     config = Config(
@@ -362,6 +441,9 @@ def load_config(env_path: Optional[Path] = None) -> Config:
         user=user,
         status_colors=_parse_status_colors(),
         discord=discord_config,
+        auto_apply=auto_apply_config,
+        job_desc_output_dir=job_desc_output_dir,
+        base_resume_path=base_resume_path,
         max_retries=_get_int("MAX_RETRIES", 3),
         page_timeout_seconds=_get_int("PAGE_TIMEOUT_SECONDS", 30),
         render_delay_seconds=_get_float("RENDER_DELAY_SECONDS", 1.0),
@@ -377,6 +459,8 @@ def load_config(env_path: Optional[Path] = None) -> Config:
     config.auth_dir.mkdir(exist_ok=True)
     config.data_dir.mkdir(exist_ok=True)
     config.logs_dir.mkdir(exist_ok=True)
+    config.auto_apply.output_dir.mkdir(parents=True, exist_ok=True)
+    config.job_desc_output_dir.mkdir(parents=True, exist_ok=True)
 
     return config
 

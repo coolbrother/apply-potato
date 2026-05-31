@@ -287,18 +287,75 @@ class JobScraper:
                 url = job_data["position_url"]
                 self.dedup_checker.add_to_cache(url)
 
+                # Dream Company = in user's named list OR meets salary threshold
+                is_dream = extracted.company and is_dream_company(
+                    extracted.company,
+                    self.config.user.target_companies,
+                    salary_min=extracted.salary_min,
+                    salary_max=extracted.salary_max,
+                    salary_period=extracted.salary_period,
+                    min_salary_annual=self.config.discord.dream_company_min_salary_annual,
+                    min_salary_hourly=self.config.discord.dream_company_min_salary_hourly,
+                )
+
                 # Send Discord notification if dream company
-                if self.config.discord.enabled and extracted.company:
-                    if is_dream_company(
-                        extracted.company,
-                        self.config.user.target_companies,
-                        self.config.discord.dream_company_match_threshold
-                    ):
-                        logger.info(f"  Dream company detected! Sending Discord notification...")
-                        try:
-                            notify_dream_company_job(extracted.company, extracted.title, final_url)
-                        except Exception as discord_error:
-                            logger.warning(f"  Failed to send Discord notification: {discord_error}")
+                if self.config.discord.enabled and is_dream:
+                    logger.info(f"  Dream company detected! Sending Discord notification...")
+                    try:
+                        notify_dream_company_job(extracted.company, extracted.title, final_url)
+                    except Exception as discord_error:
+                        logger.warning(f"  Failed to send Discord notification: {discord_error}")
+
+                # Phase 1: detect requirements (dream companies only) and save job description
+                needs_resume = False
+                needs_cover_letter = False
+                if is_dream and self.config.auto_apply.detect_requirements:
+                    logger.info(f"  Dream company — detecting application requirements...")
+                    try:
+                        from src.auto_apply import AutoApplyOrchestrator
+                        orchestrator = AutoApplyOrchestrator(self.config)
+                        needs_resume, needs_cover_letter = await orchestrator.detect_only(
+                            extracted=extracted,
+                            job_url=final_url,
+                            page_content=content,
+                            scraper=scraper,
+                        )
+                        logger.info(f"  Requirements: resume={needs_resume}, cover_letter={needs_cover_letter}")
+                    except Exception as e:
+                        logger.warning(f"  Requirement detection failed (non-fatal): {e}")
+
+                # Update Sheets with Resume / Cover Letter columns
+                try:
+                    self.sheets_client.update_job(row_num, {
+                        "resume_needed": "Yes" if needs_resume else "No",
+                        "cover_letter_needed": "Yes" if needs_cover_letter else "No",
+                    })
+                except Exception as e:
+                    logger.warning(f"  Failed to update Resume/CL columns: {e}")
+
+                # Save job description to Resume repo folder
+                try:
+                    from src.job_desc import save_job_description, commit_and_push_job_folder
+                    import re as _re
+                    company_safe = _re.sub(r'[^\w\s-]', '', extracted.company or "Company").strip()
+                    company_safe = _re.sub(r'[\s]+', '_', company_safe)[:50]
+                    stem = f"{row_num}_{company_safe}"
+                    md_path = save_job_description(
+                        row_num=row_num,
+                        company=extracted.company or "Company",
+                        page_content=content,
+                        extracted=extracted,
+                        base_dir=self.config.job_desc_output_dir,
+                        project_root=self.config.base_dir,
+                    )
+                    if md_path:
+                        commit_and_push_job_folder(
+                            folder=md_path.parent,
+                            repo_dir=self.config.job_desc_output_dir,
+                            stem=stem,
+                        )
+                except Exception as e:
+                    logger.warning(f"  Job description save failed (non-fatal): {e}")
 
             except Exception as e:
                 logger.error(f"  Failed to add to Sheets: {e}")
@@ -407,15 +464,60 @@ class JobScraper:
         return self.stats
 
 
-def run_once(limit: Optional[int] = None, newsletter_only: bool = False):
-    """Run the pipeline once."""
+def run_once(limit: Optional[int] = None, newsletter_only: bool = False, with_docs: bool = False):
+    """Run Phase 1. If with_docs=True, also run Phase 2 afterwards."""
     config = get_config()
     setup_logging("scrape", config, console=True)
 
     with JobScraper(config) as scraper:
         stats = asyncio.run(scraper.run(limit=limit, newsletter_only=newsletter_only))
 
+    if with_docs:
+        logger.info("")
+        logger.info("=" * 60)
+        logger.info("Running Phase 2 — document generation")
+        logger.info("=" * 60)
+        from generate_docs import run_all
+        run_all(config)
+
     return stats
+
+
+async def _run_single_url(url: str):
+    """Run Phase 1 against a single job URL (for testing). Returns the result."""
+    from src.scraper import PlaywrightScraper
+
+    config = get_config()
+    listing = JobListing(
+        company="Unknown",
+        title="Unknown",
+        location="",
+        url=url,
+        date_posted="",
+        source_repo="--url",
+        age_days=0,
+    )
+
+    with JobScraper(config) as job_scraper:
+        async with PlaywrightScraper(config) as scraper:
+            result = await job_scraper._process_listing(listing, scraper)
+
+    logger.info(f"Result: {result}")
+    return result
+
+
+def run_single_url(url: str, with_docs: bool = False):
+    config = get_config()
+    setup_logging("scrape", config, console=True)
+    asyncio.run(_run_single_url(url))
+
+    if with_docs:
+        logger.info("")
+        logger.info("=" * 60)
+        logger.info("Running Phase 2 — document generation")
+        logger.info("=" * 60)
+        from generate_docs import run_all
+        run_all(config)
 
 
 def run_scheduled():
@@ -477,6 +579,10 @@ def main():
                         help="Clear filtered jobs cache (use when profile changes)")
     parser.add_argument("--clear-seen", action="store_true",
                         help="Clear seen sources cache (re-process all URLs)")
+    parser.add_argument("--url", type=str,
+                        help="Run the full pipeline against a single job URL (for testing)")
+    parser.add_argument("--with-docs", action="store_true",
+                        help="Also run Phase 2 (doc generation) after Phase 1 completes")
     args = parser.parse_args()
 
     if args.clear_filtered:
@@ -485,8 +591,10 @@ def main():
         clear_seen()
     elif args.scheduled:
         run_scheduled()
+    elif args.url:
+        run_single_url(args.url, with_docs=args.with_docs)
     else:
-        run_once(limit=args.limit, newsletter_only=args.newsletter_only)
+        run_once(limit=args.limit, newsletter_only=args.newsletter_only, with_docs=args.with_docs)
 
 
 if __name__ == "__main__":

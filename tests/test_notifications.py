@@ -1,124 +1,187 @@
 """
-Unit tests for dream company matching logic.
-
-Tests the is_dream_company() fuzzy matching function without sending
-any real Discord messages.
+Tests for dream company matching and salary threshold logic.
 
 Usage:
     pytest tests/test_notifications.py -v
 """
 
-from src.notifications import is_dream_company
+import pytest
+
+from src.notifications import is_dream_company, meets_salary_threshold
 
 
 class TestIsDreamCompany:
-    """Test the is_dream_company() fuzzy matching function."""
+    """Test is_dream_company() — exact match with legal suffix stripping."""
+
+    # --- Name list matching ---
 
     def test_exact_match(self):
-        """Test exact company name match."""
-        assert is_dream_company("Google", ["Google"], 80) is True
-        assert is_dream_company("Meta", ["Meta"], 80) is True
-        assert is_dream_company("Microsoft", ["Microsoft"], 80) is True
+        assert is_dream_company("Google", ["Google"]) is True
 
-    def test_case_insensitive_match(self):
-        """Test case-insensitive matching."""
-        assert is_dream_company("google", ["Google"], 80) is True
-        assert is_dream_company("GOOGLE", ["google"], 80) is True
-        assert is_dream_company("GoOgLe", ["GOOGLE"], 80) is True
+    def test_case_insensitive(self):
+        assert is_dream_company("google", ["Google"]) is True
+        assert is_dream_company("GOOGLE", ["google"]) is True
 
-    def test_substring_match_dream_in_company(self):
-        """Test when dream company name is substring of actual company."""
-        assert is_dream_company("Google LLC", ["Google"], 80) is True
-        assert is_dream_company("Meta Platforms Inc", ["Meta"], 80) is True
-        assert is_dream_company("Microsoft Corporation", ["Microsoft"], 80) is True
-        assert is_dream_company("Amazon Web Services", ["Amazon"], 80) is True
+    def test_strips_llc(self):
+        assert is_dream_company("Google LLC", ["Google"]) is True
 
-    def test_substring_match_company_in_dream(self):
-        """Test when actual company name is substring of dream company."""
-        assert is_dream_company("Google", ["Google LLC"], 80) is True
-        assert is_dream_company("Meta", ["Meta Platforms"], 80) is True
+    def test_strips_inc(self):
+        assert is_dream_company("Apple Inc", ["Apple"]) is True
+        assert is_dream_company("Apple Inc.", ["Apple"]) is True
 
-    def test_fuzzy_match_with_suffix(self):
-        """Test fuzzy matching with company suffixes."""
-        assert is_dream_company("Qualcomm Inc", ["Qualcomm"], 80) is True
-        assert is_dream_company("Qualcomm Technologies", ["Qualcomm"], 80) is True
-        assert is_dream_company("Apple Inc.", ["Apple"], 80) is True
+    def test_strips_corp(self):
+        assert is_dream_company("Microsoft Corp", ["Microsoft"]) is True
+        assert is_dream_company("Microsoft Corp.", ["Microsoft"]) is True
 
-    def test_abbreviation_partial_match(self):
-        """Test partial matching for abbreviations that are substrings."""
-        # JPM = JPMorgan - "jpm" is a substring of "jpmorgan"
-        assert is_dream_company("JPMorgan Chase", ["JPM"], 80) is True
+    def test_strips_ltd(self):
+        assert is_dream_company("Acme Ltd", ["Acme"]) is True
 
-        # Note: Acronyms like "SIG" for "Susquehanna International Group"
-        # won't match since "sig" is not a substring of the full name.
-        # This is expected behavior - use the full company name in dream list.
+    def test_strips_limited(self):
+        assert is_dream_company("Acme Limited", ["Acme"]) is True
+
+    def test_strips_technologies(self):
+        assert is_dream_company("Qualcomm Technologies", ["Qualcomm"]) is True
+
+    def test_strips_technology(self):
+        assert is_dream_company("Qualcomm Technology", ["Qualcomm"]) is True
+
+    def test_suffix_in_dream_list_entry(self):
+        """Suffix stripping applies to both sides."""
+        assert is_dream_company("Google", ["Google LLC"]) is True
 
     def test_no_match_different_company(self):
-        """Test that unrelated companies don't match."""
-        assert is_dream_company("RandomCorp", ["Google", "Meta"], 80) is False
-        assert is_dream_company("TechStartup", ["Apple", "Amazon"], 80) is False
-        assert is_dream_company("Unknown Inc", ["Microsoft"], 80) is False
+        assert is_dream_company("RandomCorp", ["Google", "Meta"]) is False
 
-    def test_no_match_similar_but_different(self):
-        """Test that similar but different companies don't match at high threshold."""
-        # "Goggle" is similar to "Google" but not the same
-        # At 80% threshold, this should likely fail
-        result = is_dream_company("Goggle Inc", ["Google"], 90)
-        # This might pass due to high similarity - adjust threshold if needed
-        # The point is to test the threshold behavior
+    def test_no_fuzzy_match(self):
+        """Old fuzzy behavior must NOT apply — 'Goggle' should not match 'Google'."""
+        assert is_dream_company("Goggle", ["Google"]) is False
 
-    def test_empty_company_name(self):
-        """Test with empty company name."""
-        assert is_dream_company("", ["Google"], 80) is False
-        assert is_dream_company(None, ["Google"], 80) is False
+    def test_no_substring_match(self):
+        """Substring is no longer sufficient — must be exact after normalization."""
+        assert is_dream_company("Applied Materials", ["Apple"]) is False
+        assert is_dream_company("JPMorgan", ["JPM"]) is False
 
-    def test_empty_dream_companies_list(self):
-        """Test with empty dream companies list."""
-        assert is_dream_company("Google", [], 80) is False
-        assert is_dream_company("Google", None, 80) is False
+    def test_empty_company(self):
+        assert is_dream_company("", ["Google"]) is False
+        assert is_dream_company(None, ["Google"]) is False
 
-    def test_both_empty(self):
-        """Test with both inputs empty."""
-        assert is_dream_company("", [], 80) is False
-        assert is_dream_company(None, None, 80) is False
+    def test_empty_dream_list(self):
+        assert is_dream_company("Google", []) is False
 
-    def test_multiple_dream_companies(self):
-        """Test matching against multiple dream companies."""
-        dream_list = ["Google", "Meta", "Apple", "Microsoft", "Amazon"]
+    def test_multiple_companies_in_list(self):
+        dream_list = ["Google", "Meta", "Apple", "Microsoft"]
+        assert is_dream_company("Meta", dream_list) is True
+        assert is_dream_company("TechStartup", dream_list) is False
 
-        assert is_dream_company("Google", dream_list, 80) is True
-        assert is_dream_company("Meta Platforms", dream_list, 80) is True
-        assert is_dream_company("Apple Inc", dream_list, 80) is True
-        assert is_dream_company("RandomCorp", dream_list, 80) is False
+    @pytest.mark.parametrize("company,dream_list", [
+        ("NVIDIA Corporation", ["NVIDIA"]),
+        ("Netflix, Inc.", ["Netflix"]),
+        ("Stripe, Inc", ["Stripe"]),
+        ("Airbnb, Inc.", ["Airbnb"]),
+        ("  Google  ", ["Google"]),
+    ])
+    def test_common_variations(self, company, dream_list):
+        assert is_dream_company(company, dream_list) is True
 
-    def test_threshold_sensitivity(self):
-        """Test different threshold values."""
-        # Lower threshold = more lenient matching
-        # Higher threshold = stricter matching
+    # --- Salary threshold matching (no name list) ---
 
-        # "Googl" vs "Google" - missing one letter
-        # At low threshold, might match
-        # At high threshold, should not match
-        assert is_dream_company("Google", ["Google"], 50) is True  # Exact match always works
-        assert is_dream_company("Google", ["Google"], 100) is True  # Exact match at 100%
+    def test_salary_threshold_annual_match(self):
+        assert is_dream_company(
+            "SomeRandomCo", [],
+            salary_min=120000, salary_max=150000, salary_period="yearly",
+            min_salary_annual=100000,
+        ) is True
 
-    def test_common_company_variations(self):
-        """Test common company name variations."""
-        # Test various real-world company name formats
-        test_cases = [
-            # Note: Alphabet Inc vs Google won't match - different strings
-            # To match Google jobs from Alphabet, add both to dream list
-            ("NVIDIA Corporation", ["NVIDIA"], True),
-            ("Netflix, Inc.", ["Netflix"], True),
-            ("Stripe, Inc", ["Stripe"], True),
-            ("Airbnb, Inc.", ["Airbnb"], True),
-        ]
+    def test_salary_threshold_annual_miss(self):
+        assert is_dream_company(
+            "SomeRandomCo", [],
+            salary_min=50000, salary_max=80000, salary_period="yearly",
+            min_salary_annual=100000,
+        ) is False
 
-        for company, dream_list, expected in test_cases:
-            result = is_dream_company(company, dream_list, 80)
-            assert result == expected, f"Failed for {company} vs {dream_list}"
+    def test_salary_threshold_hourly_match(self):
+        assert is_dream_company(
+            "SomeRandomCo", [],
+            salary_min=55, salary_max=65, salary_period="hourly",
+            min_salary_hourly=50,
+        ) is True
 
-    def test_whitespace_handling(self):
-        """Test handling of extra whitespace."""
-        assert is_dream_company("  Google  ", ["Google"], 80) is True
-        assert is_dream_company("Google", ["  Google  "], 80) is True
+    def test_salary_threshold_hourly_miss(self):
+        assert is_dream_company(
+            "SomeRandomCo", [],
+            salary_min=30, salary_max=40, salary_period="hourly",
+            min_salary_hourly=50,
+        ) is False
+
+    def test_no_threshold_configured_does_not_match(self):
+        """Without thresholds set, salary alone should not make it a dream company."""
+        assert is_dream_company(
+            "SomeRandomCo", [],
+            salary_min=500000, salary_max=500000, salary_period="yearly",
+        ) is False
+
+    def test_named_company_below_salary_threshold_still_matches(self):
+        """A company in the user's list qualifies regardless of salary."""
+        assert is_dream_company(
+            "Google", ["Google"],
+            salary_min=10000, salary_max=20000, salary_period="yearly",
+            min_salary_annual=100000,
+        ) is True
+
+    def test_no_salary_info_does_not_match_on_threshold_alone(self):
+        """No salary info → can't confirm threshold, so not a dream company."""
+        assert is_dream_company(
+            "SomeRandomCo", [],
+            salary_min=None, salary_max=None, salary_period=None,
+            min_salary_annual=100000,
+        ) is False
+
+
+class TestMeetsSalaryThreshold:
+    """Test meets_salary_threshold() in isolation."""
+
+    def test_no_threshold_configured(self):
+        assert meets_salary_threshold(50000, 80000, "yearly", None, None) is False
+
+    def test_no_salary_info(self):
+        """No salary listed — can't confirm threshold met, so False."""
+        assert meets_salary_threshold(None, None, None, 100000, 50) is False
+
+    def test_no_period_assumes_yearly(self):
+        """Unknown period treated as yearly."""
+        assert meets_salary_threshold(None, 120000, None, 100000, None) is True
+        assert meets_salary_threshold(None, 80000, None, 100000, None) is False
+
+    def test_yearly_meets_annual_threshold(self):
+        assert meets_salary_threshold(None, 120000, "yearly", 100000, None) is True
+
+    def test_yearly_misses_annual_threshold(self):
+        assert meets_salary_threshold(None, 80000, "yearly", 100000, None) is False
+
+    def test_hourly_meets_hourly_threshold(self):
+        assert meets_salary_threshold(None, 55, "hourly", None, 50) is True
+
+    def test_hourly_misses_hourly_threshold(self):
+        assert meets_salary_threshold(None, 40, "hourly", None, 50) is False
+
+    def test_hourly_meets_annual_threshold(self):
+        # $60/hr * 2080 = $124,800/yr > $100k
+        assert meets_salary_threshold(None, 60, "hourly", 100000, None) is True
+
+    def test_monthly_meets_annual_threshold(self):
+        # $10,000/mo * 12 = $120,000/yr > $100k
+        assert meets_salary_threshold(None, 10000, "monthly", 100000, None) is True
+
+    def test_uses_salary_max_over_min(self):
+        """Should check salary_max when available."""
+        # min is below threshold, max is above
+        assert meets_salary_threshold(80000, 120000, "yearly", 100000, None) is True
+
+    def test_falls_back_to_salary_min(self):
+        """Uses salary_min when max is None."""
+        assert meets_salary_threshold(110000, None, "yearly", 100000, None) is True
+
+    def test_either_threshold_sufficient(self):
+        """Meeting either annual OR hourly threshold is enough."""
+        # Below annual but above hourly
+        assert meets_salary_threshold(None, 55, "hourly", 200000, 50) is True

@@ -1,0 +1,38 @@
+You are analyzing a job application page to determine what documents are required to apply.
+
+Job details:
+- Company: {company}
+- Position: {title}
+- URL: {url}
+
+Page content (first 4000 + last 4000 chars):
+{page_content}
+
+{screenshot_instruction}
+
+Your task: Determine what the application form requires.
+
+Look for:
+1. Whether a resume/CV upload field is present (required or optional)
+2. Whether a cover letter upload field is present (required or optional)
+3. What button leads to the application form (if not already on it)
+
+Respond with ONLY valid JSON in this exact format:
+{{
+  "needs_resume": true,
+  "cover_letter_field_present": false,
+  "confidence": 0.85,
+  "apply_button_text": "Apply Now",
+  "evidence": "Brief quoted text or visual description of what you found"
+}}
+
+Field definitions:
+- needs_resume: true if a resume/CV upload field exists (required or optional)
+- cover_letter_field_present: true if a cover letter upload or text field exists anywhere on the form (regardless of whether it is required or optional)
+- confidence: 0.0-1.0, how confident you are in this assessment
+- apply_button_text: exact text of the button to click to reach the application form, or null if already on the form or no button found
+- evidence: short quote or description of the text/visual that informed your answer
+
+If the page gives no clear signal (e.g., login wall, generic company page, blocked):
+- Default to: needs_resume=true, cover_letter_field_present=false, confidence=0.3, apply_button_text=null
+- Set evidence to explain why you could not determine requirements

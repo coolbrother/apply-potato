@@ -78,24 +78,26 @@ SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
 # Column mapping (0-indexed)
 COLUMNS = {
-    "company": 0,           # A
-    "position": 1,          # B
-    "status": 2,            # C
-    "job_posting_date": 3,  # D
-    "application_date": 4,  # E
-    "oa_date": 5,           # F
-    "phone_date": 6,        # G
-    "tech_date": 7,         # H
-    "fit_score": 8,         # I
-    "salary": 9,            # J
-    "job_type": 10,         # K
-    "work_model": 11,       # L
-    "location": 12,         # M
-    "season_year": 13,      # N
-    "deadline": 14,         # O
-    "source": 15,           # P
-    "added_date": 16,       # Q
-    "notes": 17,            # R
+    "company": 0,               # A
+    "position": 1,              # B
+    "status": 2,                # C
+    "job_posting_date": 3,      # D
+    "application_date": 4,      # E
+    "oa_date": 5,               # F
+    "phone_date": 6,            # G
+    "tech_date": 7,             # H
+    "fit_score": 8,             # I
+    "salary": 9,                # J
+    "job_type": 10,             # K
+    "work_model": 11,           # L
+    "location": 12,             # M
+    "season_year": 13,          # N
+    "deadline": 14,             # O
+    "source": 15,               # P
+    "added_date": 16,           # Q
+    "resume_needed": 17,        # R
+    "cover_letter_needed": 18,  # S
+    "notes": 19,                # T
 }
 
 # Header row (must match column order)
@@ -103,7 +105,7 @@ HEADERS = [
     "Company", "Position", "Status", "Job Posting Date", "Application Date",
     "OA Date", "Phone Interview Date", "Tech Interview Date", "Fit Score",
     "Salary", "Job Type", "Work Model", "Location", "Season/Year",
-    "Deadline", "Source", "Added Date", "Notes"
+    "Deadline", "Source", "Added Date", "Resume", "Cover Letter", "Notes"
 ]
 
 # Status values
@@ -139,6 +141,8 @@ class JobRow:
     deadline: str
     source: str
     added_date: str
+    resume_needed: str      # "Yes" | "No" | ""
+    cover_letter_needed: str  # "Yes" | "No" | ""
     notes: str
 
     @classmethod
@@ -187,6 +191,8 @@ class JobRow:
             deadline=values[COLUMNS["deadline"]],
             source=values[COLUMNS["source"]],
             added_date=values[COLUMNS["added_date"]],
+            resume_needed=values[COLUMNS["resume_needed"]],
+            cover_letter_needed=values[COLUMNS["cover_letter_needed"]],
             notes=values[COLUMNS["notes"]],
         )
 
@@ -384,7 +390,7 @@ class SheetsClient:
                         "sheetId": jobs_sheet_id,
                         "startRowIndex": 0,
                         "startColumnIndex": 0,
-                        "endColumnIndex": 18
+                        "endColumnIndex": 20
                     }
                 }
             }
@@ -409,7 +415,7 @@ class SheetsClient:
         def check_headers():
             result = service.spreadsheets().values().get(
                 spreadsheetId=sheet_id,
-                range="Jobs!A1:R1"
+                range="Jobs!A1:T1"
             ).execute()
             return result.get("values", [[]])[0]
 
@@ -425,7 +431,7 @@ class SheetsClient:
             def set_headers():
                 service.spreadsheets().values().update(
                     spreadsheetId=sheet_id,
-                    range="Jobs!A1:R1",
+                    range="Jobs!A1:T1",
                     valueInputOption="RAW",
                     body={"values": [HEADERS]}
                 ).execute()
@@ -448,7 +454,7 @@ class SheetsClient:
         def fetch():
             result = service.spreadsheets().values().get(
                 spreadsheetId=sheet_id,
-                range="Jobs!A2:R",  # Skip header row
+                range="Jobs!A2:T",  # Skip header row
                 valueRenderOption="FORMULA"  # Get formulas to parse hyperlinks
             ).execute()
             return result.get("values", [])
@@ -505,7 +511,7 @@ class SheetsClient:
         def append():
             result = service.spreadsheets().values().append(
                 spreadsheetId=sheet_id,
-                range="Jobs!A:R",
+                range="Jobs!A:T",
                 valueInputOption="USER_ENTERED",  # Parse formulas
                 insertDataOption="INSERT_ROWS",
                 body={"values": [row]}

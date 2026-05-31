@@ -35,7 +35,7 @@ LOGS_DIR = PROJECT_ROOT / "logs"
 WINSW_GITHUB_API = "https://api.github.com/repos/winsw/winsw/releases/latest"
 WINSW_EXE = WINSW_DIR / "WinSW-x64.exe"
 
-# Service definitions
+# Service definitions (persistent daemons — WinSW on Windows, KeepAlive agents on macOS)
 SERVICES = {
     "scrape": {
         "id": "ApplyPotatoScrape",
@@ -50,6 +50,19 @@ SERVICES = {
         "description": "Monitors Gmail for job application status updates",
         "script": "check_gmail.py",
         "plist_id": "com.applypotato.gmail"
+    }
+}
+
+# Scheduled task definitions (one-shot at a fixed time — schtasks on Windows, StartCalendarInterval on macOS)
+SCHEDULED_TASKS = {
+    "daily_summary": {
+        "win_task_name": r"ApplyPotato\DailySummary",
+        "name": "ApplyPotato Daily Summary",
+        "description": "Sends a midnight Discord summary of today's pipeline activity",
+        "script": "scripts/daily_summary.py",
+        "plist_id": "com.applypotato.daily_summary",
+        "hour": 0,
+        "minute": 0,
     }
 }
 
@@ -383,6 +396,71 @@ def get_windows_service_status(service_key: str) -> str:
         return "Error"
 
 
+# =============================================================================
+# Windows Scheduled Tasks (one-shot, time-triggered)
+# =============================================================================
+
+def install_windows_scheduled_task(task_key: str) -> bool:
+    """Register a one-shot daily scheduled task via schtasks."""
+    task = SCHEDULED_TASKS[task_key]
+    python_path = VENV_DIR / "Scripts" / "python.exe"
+    script_path = PROJECT_ROOT / task["script"]
+    time_str = f"{task['hour']:02d}:{task['minute']:02d}"
+
+    cmd = [
+        "schtasks", "/Create",
+        "/TN", task["win_task_name"],
+        "/TR", f'"{python_path}" "{script_path}"',
+        "/SC", "DAILY",
+        "/ST", time_str,
+        "/F",  # force-overwrite if already exists
+    ]
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            print_error(f"Failed to create scheduled task: {result.stderr or result.stdout}")
+            return False
+        print_success(f"Scheduled: {task['name']} at {time_str} daily")
+        return True
+    except Exception as e:
+        print_error(f"Failed to create scheduled task: {e}")
+        return False
+
+
+def uninstall_windows_scheduled_task(task_key: str) -> bool:
+    """Remove a scheduled task via schtasks."""
+    task = SCHEDULED_TASKS[task_key]
+    cmd = ["schtasks", "/Delete", "/TN", task["win_task_name"], "/F"]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0 and "cannot find" not in result.stderr.lower():
+            print_warning(f"schtasks delete: {result.stderr or result.stdout}")
+        print_success(f"Removed scheduled task: {task['name']}")
+        return True
+    except Exception as e:
+        print_error(f"Failed to remove scheduled task: {e}")
+        return False
+
+
+def get_windows_scheduled_task_status(task_key: str) -> str:
+    """Query a scheduled task status via schtasks."""
+    task = SCHEDULED_TASKS[task_key]
+    try:
+        result = subprocess.run(
+            ["schtasks", "/Query", "/TN", task["win_task_name"], "/FO", "LIST"],
+            capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            return "Not installed"
+        for line in result.stdout.splitlines():
+            if line.strip().lower().startswith("status:"):
+                return line.split(":", 1)[1].strip()
+        return "Installed"
+    except Exception:
+        return "Error"
+
+
 def install_windows_services() -> bool:
     """Install all Windows services."""
     print_header("Installing Windows Services")
@@ -418,6 +496,11 @@ def install_windows_services() -> bool:
         if not install_windows_service(key):
             success = False
 
+    # Install scheduled tasks (no admin required for user-scope tasks)
+    for key in SCHEDULED_TASKS:
+        if not install_windows_scheduled_task(key):
+            success = False
+
     if success:
         print()
         print_success("All services installed!")
@@ -439,6 +522,10 @@ def uninstall_windows_services() -> bool:
     success = True
     for key in SERVICES:
         if not uninstall_windows_service(key):
+            success = False
+
+    for key in SCHEDULED_TASKS:
+        if not uninstall_windows_scheduled_task(key):
             success = False
 
     if success:
@@ -604,6 +691,109 @@ def get_macos_agent_status(service_key: str) -> str:
         return "Error"
 
 
+# =============================================================================
+# macOS Calendar Agents (one-shot, time-triggered)
+# =============================================================================
+
+def create_calendar_plist_content(task_key: str) -> str:
+    """Generate plist for a macOS Launch Agent with StartCalendarInterval."""
+    task = SCHEDULED_TASKS[task_key]
+    python_path = VENV_DIR / "bin" / "python"
+    script_path = PROJECT_ROOT / task["script"]
+    stdout_log = LOGS_DIR / f"{task_key}_stdout.log"
+    stderr_log = LOGS_DIR / f"{task_key}_stderr.log"
+
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{task["plist_id"]}</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>{python_path}</string>
+        <string>{script_path}</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>{PROJECT_ROOT}</string>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>{task["hour"]}</integer>
+        <key>Minute</key>
+        <integer>{task["minute"]}</integer>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>{stdout_log}</string>
+
+    <key>StandardErrorPath</key>
+    <string>{stderr_log}</string>
+</dict>
+</plist>
+"""
+
+
+def install_macos_calendar_agent(task_key: str) -> bool:
+    """Install a macOS Launch Agent with StartCalendarInterval."""
+    task = SCHEDULED_TASKS[task_key]
+    launch_agents_dir = get_launch_agents_dir()
+    plist_path = launch_agents_dir / f"{task['plist_id']}.plist"
+
+    try:
+        launch_agents_dir.mkdir(parents=True, exist_ok=True)
+        if plist_path.exists():
+            subprocess.run(["launchctl", "unload", str(plist_path)], capture_output=True)
+
+        plist_path.write_text(create_calendar_plist_content(task_key))
+
+        result = subprocess.run(
+            ["launchctl", "load", str(plist_path)],
+            capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            print_error(f"Failed to load agent: {result.stderr}")
+            return False
+
+        time_str = f"{task['hour']:02d}:{task['minute']:02d}"
+        print_success(f"Scheduled: {task['name']} at {time_str} daily")
+        return True
+    except Exception as e:
+        print_error(f"Failed to install {task['plist_id']}: {e}")
+        return False
+
+
+def uninstall_macos_calendar_agent(task_key: str) -> bool:
+    """Uninstall a macOS calendar Launch Agent."""
+    task = SCHEDULED_TASKS[task_key]
+    plist_path = get_launch_agents_dir() / f"{task['plist_id']}.plist"
+    try:
+        if plist_path.exists():
+            subprocess.run(["launchctl", "unload", str(plist_path)], capture_output=True)
+            plist_path.unlink()
+        print_success(f"Removed scheduled agent: {task['name']}")
+        return True
+    except Exception as e:
+        print_error(f"Failed to uninstall {task['plist_id']}: {e}")
+        return False
+
+
+def get_macos_calendar_agent_status(task_key: str) -> str:
+    """Get macOS calendar agent status."""
+    task = SCHEDULED_TASKS[task_key]
+    plist_path = get_launch_agents_dir() / f"{task['plist_id']}.plist"
+    if not plist_path.exists():
+        return "Not installed"
+    result = subprocess.run(
+        ["launchctl", "list", task["plist_id"]],
+        capture_output=True, text=True
+    )
+    return "Installed" if result.returncode == 0 else "Stopped"
+
+
 def install_macos_agents() -> bool:
     """Install all macOS Launch Agents."""
     print_header("Installing macOS Launch Agents")
@@ -614,6 +804,10 @@ def install_macos_agents() -> bool:
     success = True
     for key in SERVICES:
         if not install_macos_agent(key):
+            success = False
+
+    for key in SCHEDULED_TASKS:
+        if not install_macos_calendar_agent(key):
             success = False
 
     if success:
@@ -635,6 +829,10 @@ def uninstall_macos_agents() -> bool:
         if not uninstall_macos_agent(key):
             success = False
 
+    for key in SCHEDULED_TASKS:
+        if not uninstall_macos_calendar_agent(key):
+            success = False
+
     if success:
         print()
         print_success("All agents uninstalled!")
@@ -647,7 +845,7 @@ def uninstall_macos_agents() -> bool:
 # =============================================================================
 
 def print_service_status() -> None:
-    """Print status of all services."""
+    """Print status of all services and scheduled tasks."""
     print_header("Service Status")
     print()
 
@@ -658,8 +856,16 @@ def print_service_status() -> None:
             status = get_macos_agent_status(key)
         else:
             status = "Unsupported OS"
-
         print(f"  {service['name']}: {status}")
+
+    for key, task in SCHEDULED_TASKS.items():
+        if is_windows():
+            status = get_windows_scheduled_task_status(key)
+        elif is_macos():
+            status = get_macos_calendar_agent_status(key)
+        else:
+            status = "Unsupported OS"
+        print(f"  {task['name']}: {status}")
 
     print()
 

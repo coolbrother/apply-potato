@@ -51,17 +51,21 @@ class PlaywrightScraper:
             content = await scraper.fetch_page("https://example.com/job/123")
     """
 
-    def __init__(self, config: Optional[Config] = None):
+    def __init__(self, config: Optional[Config] = None, cdp_port: Optional[int] = None):
         """
         Initialize the scraper.
 
         Args:
             config: Optional config object. Uses global config if not provided.
+            cdp_port: If set, expose Chrome DevTools Protocol on this port so that
+                      external tools (e.g. Chrome DevTools MCP) can connect to the
+                      same browser instance.  Example: cdp_port=9222.
         """
         self.config = config or get_config()
         self._playwright = None
         self._context: Optional[BrowserContext] = None
         self._page: Optional[Page] = None
+        self._cdp_port: Optional[int] = cdp_port
 
     async def __aenter__(self) -> "PlaywrightScraper":
         """Async context manager entry - launches browser."""
@@ -87,6 +91,13 @@ class PlaywrightScraper:
         width = random.choice(VIEWPORT_WIDTHS)
         height = random.choice(VIEWPORT_HEIGHTS)
 
+        # Build extra Chrome args
+        extra_args = ["--disable-blink-features=AutomationControlled"]
+        if self._cdp_port:
+            # Expose Chrome DevTools Protocol so external tools (e.g. Chrome DevTools MCP)
+            # can connect to this same browser instance via localhost:<cdp_port>.
+            extra_args.append(f"--remote-debugging-port={self._cdp_port}")
+
         # Launch persistent context with anti-detection settings
         self._context = await self._playwright.chromium.launch_persistent_context(
             user_data_dir=str(BROWSER_PROFILE_DIR),
@@ -96,7 +107,7 @@ class PlaywrightScraper:
             locale="en-US",
             timezone_id="America/New_York",
             viewport={"width": width, "height": height},
-            args=["--disable-blink-features=AutomationControlled"],
+            args=extra_args,
         )
 
         # Hide webdriver automation signal

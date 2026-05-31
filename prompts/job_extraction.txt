@@ -62,15 +62,18 @@ Extract the following fields:
 FIELD GUIDELINES:
 
 class_standing_requirement:
-- Extract the EXACT text from the posting about year-level requirements
+- Extract the EXACT text from the posting about year-level OR enrollment/credit-hour requirements
+- This includes year-level language (Junior, Senior) AND enrollment/credit requirements
 - Do NOT simplify or normalize - preserve the original wording
 - Examples:
   - "entering junior year or senior year" → "entering junior year or senior year" (NOT "Junior")
   - "rising senior" → "rising senior" (NOT "Senior")
   - "must be a Junior or Senior" → "must be a Junior or Senior"
   - "penultimate year" → "penultimate year"
+  - "Must be enrolled in a college degree program and have earned 60 credit hours by the end of May 2026" → copy that exact text (enrollment + credit-hour requirement)
+  - "Must be currently enrolled in a Bachelor's program" → copy that exact text
 - Do NOT put major/degree info here (goes in required_majors instead)
-- If no year-level requirement mentioned, use null
+- If no year-level or enrollment requirement mentioned, use null
 
 graduation_timeline:
 - This field is ONLY for when someone must COMPLETE/FINISH their degree (graduation date)
@@ -81,9 +84,11 @@ graduation_timeline:
   - "Expected graduation by May 2026" → "Expected graduation by May 2026"
 - IMPORTANT: Enrollment requirements are NOT graduation requirements:
   - "Must be enrolled in a degree program" → null (this is enrollment, not graduation)
-  - "Must have earned 60 credit hours by May 2026" → null (this is enrollment status)
+  - "Must have earned 60 credit hours by May 2026" → null (this is enrollment status, not graduation)
+  - "Must be enrolled in a college degree program and have earned 60 credit hours by the end of May 2026" → null (still enrolled = still a student = NOT graduating)
   - "Must be currently pursuing a degree" → null (this means still a student)
-- If someone must be "enrolled" or "pursuing" a degree, they are STILL A STUDENT - that's the opposite of graduating
+- KEY RULE: If the sentence says the person must be ENROLLED or PURSUING a degree, they are STILL A STUDENT. A date in that sentence (e.g., "by May 2026") refers to a credit-hour milestone, NOT a graduation date. Do NOT extract it as graduation_timeline.
+- graduation_timeline is ONLY for language like "graduating in", "will graduate by", "expected graduation", "must complete degree by"
 - If no graduation deadline mentioned, use null
 
 season_year:
