@@ -306,11 +306,11 @@ class JobScraper:
                     except Exception as discord_error:
                         logger.warning(f"  Failed to send Discord notification: {discord_error}")
 
-                # Phase 1: detect requirements (dream companies only) and save job description
+                # Phase 1: detect requirements and save job description
                 needs_resume = False
                 needs_cover_letter = False
-                if is_dream and self.config.auto_apply.detect_requirements:
-                    logger.info(f"  Dream company — detecting application requirements...")
+                if self.config.auto_apply.detect_requirements:
+                    logger.info(f"  Detecting application requirements...")
                     try:
                         from src.auto_apply import AutoApplyOrchestrator
                         orchestrator = AutoApplyOrchestrator(self.config)
@@ -324,9 +324,10 @@ class JobScraper:
                     except Exception as e:
                         logger.warning(f"  Requirement detection failed (non-fatal): {e}")
 
-                # Update Sheets with Resume / Cover Letter columns
+                # Update Sheets with Dream / Resume / Cover Letter columns
                 try:
                     self.sheets_client.update_job(row_num, {
+                        "dream": "Yes" if is_dream else "No",
                         "resume_needed": "Yes" if needs_resume else "No",
                         "cover_letter_needed": "Yes" if needs_cover_letter else "No",
                     })

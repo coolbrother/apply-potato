@@ -373,7 +373,7 @@ def clean_test_sheet(sheets_client):
     try:
         result = service.spreadsheets().values().get(
             spreadsheetId=sheet_id,
-            range="Jobs!A:T"
+            range="Jobs!A:U"
         ).execute()
         row_count = len(result.get("values", []))
     except Exception:

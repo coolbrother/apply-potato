@@ -426,6 +426,11 @@ class AutoApplyOrchestrator:
             raise FileNotFoundError(f"Job description not found: {job_desc_path}")
 
         base_resume = self.config.base_resume_path
+        if not base_resume or not base_resume.exists():
+            raise FileNotFoundError(
+                f"BASE_RESUME_PATH not set or file not found: {base_resume}\n"
+                "Set BASE_RESUME_PATH in .env to the full path of your base resume .docx file."
+            )
         generated = []
 
         if needs_cover_letter:

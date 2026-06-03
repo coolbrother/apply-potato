@@ -82,29 +82,30 @@ COLUMNS = {
     "position": 1,              # B
     "status": 2,                # C
     "job_posting_date": 3,      # D
-    "application_date": 4,      # E
-    "oa_date": 5,               # F
-    "phone_date": 6,            # G
-    "tech_date": 7,             # H
-    "fit_score": 8,             # I
-    "salary": 9,                # J
-    "job_type": 10,             # K
-    "work_model": 11,           # L
-    "location": 12,             # M
-    "season_year": 13,          # N
-    "deadline": 14,             # O
-    "source": 15,               # P
-    "added_date": 16,           # Q
-    "resume_needed": 17,        # R
-    "cover_letter_needed": 18,  # S
-    "notes": 19,                # T
+    "dream": 4,                 # E
+    "application_date": 5,      # F
+    "oa_date": 6,               # G
+    "phone_date": 7,            # H
+    "tech_date": 8,             # I
+    "fit_score": 9,             # J
+    "salary": 10,               # K
+    "job_type": 11,             # L
+    "work_model": 12,           # M
+    "location": 13,             # N
+    "season_year": 14,          # O
+    "deadline": 15,             # P
+    "source": 16,               # Q
+    "added_date": 17,           # R
+    "resume_needed": 18,        # S
+    "cover_letter_needed": 19,  # T
+    "notes": 20,                # U
 }
 
 # Header row (must match column order)
 HEADERS = [
-    "Company", "Position", "Status", "Job Posting Date", "Application Date",
-    "OA Date", "Phone Interview Date", "Tech Interview Date", "Fit Score",
-    "Salary", "Job Type", "Work Model", "Location", "Season/Year",
+    "Company", "Position", "Status", "Job Posting Date", "Dream",
+    "Application Date", "OA Date", "Phone Interview Date", "Tech Interview Date",
+    "Fit Score", "Salary", "Job Type", "Work Model", "Location", "Season/Year",
     "Deadline", "Source", "Added Date", "Resume", "Cover Letter", "Notes"
 ]
 
@@ -132,6 +133,7 @@ class JobRow:
     oa_date: str
     phone_date: str
     tech_date: str
+    dream: str           # "Yes" | "No" | ""
     fit_score: int
     salary: str
     job_type: str
@@ -178,6 +180,7 @@ class JobRow:
             position_url=position_url,
             status=values[COLUMNS["status"]],
             job_posting_date=values[COLUMNS["job_posting_date"]],
+            dream=values[COLUMNS["dream"]],
             application_date=values[COLUMNS["application_date"]],
             oa_date=values[COLUMNS["oa_date"]],
             phone_date=values[COLUMNS["phone_date"]],
@@ -346,9 +349,9 @@ class SheetsClient:
         jobs_sheet_id = self._retry_with_backoff(get_sheet_id)
 
         # Date columns (0-indexed):
-        # D=3 (job_posting_date), E=4 (application_date), F=5 (oa_date),
-        # G=6 (phone_date), H=7 (tech_date), O=14 (deadline), Q=16 (added_date)
-        date_column_indices = [3, 4, 5, 6, 7, 14, 16]
+        # D=3 (job_posting_date), F=5 (application_date), G=6 (oa_date),
+        # H=7 (phone_date), I=8 (tech_date), P=15 (deadline), R=17 (added_date)
+        date_column_indices = [3, 5, 6, 7, 8, 15, 17]
 
         requests = []
         for col_idx in date_column_indices:
@@ -390,7 +393,7 @@ class SheetsClient:
                         "sheetId": jobs_sheet_id,
                         "startRowIndex": 0,
                         "startColumnIndex": 0,
-                        "endColumnIndex": 20
+                        "endColumnIndex": 21
                     }
                 }
             }
@@ -415,7 +418,7 @@ class SheetsClient:
         def check_headers():
             result = service.spreadsheets().values().get(
                 spreadsheetId=sheet_id,
-                range="Jobs!A1:T1"
+                range="Jobs!A1:U1"
             ).execute()
             return result.get("values", [[]])[0]
 
@@ -431,7 +434,7 @@ class SheetsClient:
             def set_headers():
                 service.spreadsheets().values().update(
                     spreadsheetId=sheet_id,
-                    range="Jobs!A1:T1",
+                    range="Jobs!A1:U1",
                     valueInputOption="RAW",
                     body={"values": [HEADERS]}
                 ).execute()
@@ -454,7 +457,7 @@ class SheetsClient:
         def fetch():
             result = service.spreadsheets().values().get(
                 spreadsheetId=sheet_id,
-                range="Jobs!A2:T",  # Skip header row
+                range="Jobs!A2:U",  # Skip header row
                 valueRenderOption="FORMULA"  # Get formulas to parse hyperlinks
             ).execute()
             return result.get("values", [])
@@ -511,7 +514,7 @@ class SheetsClient:
         def append():
             result = service.spreadsheets().values().append(
                 spreadsheetId=sheet_id,
-                range="Jobs!A:T",
+                range="Jobs!A:U",
                 valueInputOption="USER_ENTERED",  # Parse formulas
                 insertDataOption="INSERT_ROWS",
                 body={"values": [row]}

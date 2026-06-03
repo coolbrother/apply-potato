@@ -407,17 +407,9 @@ def load_config(env_path: Optional[Path] = None) -> Config:
     raw_job_desc_dir = _get_optional("JOB_DESC_OUTPUT_DIR", "/Path/To/Your/Resume")
     job_desc_output_dir = Path(raw_job_desc_dir)
 
-    # Base resume path (Phase 2 — required, no default)
+    # Base resume path (Phase 2 — optional at load time; validated at use time by generate_docs)
     raw_base_resume = _get_optional("BASE_RESUME_PATH", "")
-    if not raw_base_resume:
-        print("ERROR: BASE_RESUME_PATH is not set in .env.")
-        print("Set it to the full path of your base resume .docx file.")
-        sys.exit(1)
-    base_resume_path = Path(raw_base_resume)
-    if not base_resume_path.exists():
-        print(f"ERROR: BASE_RESUME_PATH file not found: {base_resume_path}")
-        print("Ensure the file exists before running.")
-        sys.exit(1)
+    base_resume_path = Path(raw_base_resume) if raw_base_resume else Path("")
 
     # Build config object
     config = Config(
