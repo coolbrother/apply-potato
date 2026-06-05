@@ -21,6 +21,8 @@ import json
 from pathlib import Path
 from typing import Optional, Tuple
 
+from src.config import get_config
+
 # Project paths
 PROJECT_ROOT = Path(__file__).parent.resolve()
 VENV_DIR = PROJECT_ROOT / "venv"
@@ -258,7 +260,18 @@ def create_winsw_xml(service_key: str) -> str:
     python_path = VENV_DIR / "Scripts" / "python.exe"
     script_path = PROJECT_ROOT / service["script"]
 
-    # Use absolute paths in XML
+    cfg = get_config()
+    password = cfg.windows_service_password
+    username = os.environ.get("USERNAME", "")
+    service_account_block = ""
+    if password and username:
+        service_account_block = f"""  <serviceaccount>
+    <username>.\\{username}</username>
+    <password>{password}</password>
+    <allowservicelogon>true</allowservicelogon>
+  </serviceaccount>
+"""
+
     xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <service>
   <id>{service['id']}</id>
@@ -267,7 +280,7 @@ def create_winsw_xml(service_key: str) -> str:
   <executable>{python_path}</executable>
   <arguments>"{script_path}" --scheduled</arguments>
   <workingdirectory>{PROJECT_ROOT}</workingdirectory>
-  <log mode="roll-by-size">
+{service_account_block}  <log mode="roll-by-size">
     <sizeThreshold>5120</sizeThreshold>
     <keepFiles>3</keepFiles>
   </log>
@@ -310,6 +323,20 @@ def install_windows_service(service_key: str) -> bool:
             else:
                 print_error(f"Failed to install {service['id']}: {result.stderr or result.stdout}")
                 return False
+
+        # sc.exe config is required to apply the service account — WinSW XML alone is unreliable
+        cfg = get_config()
+        if cfg.windows_service_password:
+            username = os.environ.get("USERNAME", "")
+            if username:
+                sc_result = subprocess.run(
+                    ["sc.exe", "config", service["id"], f"obj=.\\{username}", f"password={cfg.windows_service_password}"],
+                    capture_output=True, text=True
+                )
+                if sc_result.returncode == 0:
+                    print_success(f"Service account set to .\\{username}")
+                else:
+                    print_warning(f"Failed to set service account (try running as admin): {sc_result.stderr or sc_result.stdout}")
 
         # Start the service
         result = subprocess.run(

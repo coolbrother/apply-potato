@@ -127,6 +127,9 @@ class Config:
     oauth_local_port: int
     oauth_timeout_seconds: int
 
+    # Windows Service Account
+    windows_service_password: Optional[str]  # Password for running services under user account
+
     # Paths
     base_dir: Path = field(default_factory=lambda: Path(__file__).parent.parent)
 
@@ -444,6 +447,7 @@ def load_config(env_path: Optional[Path] = None) -> Config:
         log_level=_get_optional("LOG_LEVEL", "INFO").upper(),
         oauth_local_port=_get_int("OAUTH_LOCAL_PORT", 8888),
         oauth_timeout_seconds=_get_int("OAUTH_TIMEOUT_SECONDS", 120),
+        windows_service_password=_get_optional("WINDOWS_SERVICE_PASSWORD") or None,
         base_dir=base_dir,
     )
 

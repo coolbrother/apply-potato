@@ -18,6 +18,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import zipfile
 from pathlib import Path
 from typing import Optional
@@ -27,22 +28,12 @@ from .ai_extractor import ExtractedJob
 
 logger = logging.getLogger(__name__)
 
-# Max chars sent in each half of the page content
-_PAGE_HALF = 4000
-
-
 def _sanitize_name(s: str, max_len: int = 50) -> str:
     """Sanitize a string for use as a folder/file name component."""
     s = re.sub(r'[^\w\s-]', '', s).strip()
     s = re.sub(r'[\s]+', '_', s)
     return s[:max_len]
 
-
-def _truncate_page(content: str) -> str:
-    """Return first+last 4000 chars of page content."""
-    if len(content) <= _PAGE_HALF * 2:
-        return content
-    return content[:_PAGE_HALF] + "\n...[truncated]...\n" + content[-_PAGE_HALF:]
 
 
 class AutoApplyOrchestrator:
@@ -232,7 +223,9 @@ class AutoApplyOrchestrator:
             messages=messages,
             max_tokens=512,
         )
-        return _parse_json_response(response.choices[0].message.content)
+        raw = response.choices[0].message.content
+        logger.info(f"[detection:openai] {raw}")
+        return _parse_json_response(raw)
 
     def _call_gemini(self, prompt: str, screenshot_path: Optional[Path]) -> Optional[dict]:
         from google import genai
@@ -251,6 +244,7 @@ class AutoApplyOrchestrator:
             model="gemini-2.0-flash",
             contents=contents,
         )
+        logger.info(f"[detection:gemini] {response.text}")
         return _parse_json_response(response.text)
 
     def _call_claude_cli_detection(self, prompt: str) -> Optional[dict]:
@@ -265,8 +259,9 @@ class AutoApplyOrchestrator:
                 timeout=60,
             )
             if result.returncode != 0:
-                logger.warning(f"claude CLI detection failed: {result.stderr[:300]}")
+                logger.warning(f"claude CLI detection failed (exit {result.returncode}): stderr={result.stderr[:300]!r} stdout={result.stdout[:300]!r}")
                 return None
+            logger.info(f"[detection:claude] {result.stdout}")
             return _parse_json_response(result.stdout)
         except FileNotFoundError:
             raise FileNotFoundError("claude CLI not found in PATH — install Claude Code to use the 'claude' provider")
@@ -296,8 +291,8 @@ class AutoApplyOrchestrator:
     ) -> Optional[dict]:
         """Run detection and return raw result dict, or None on complete failure."""
         template = self._load_prompt()
-        truncated = _truncate_page(page_content or "")
-        prompt = self._build_prompt(template, extracted, job_url, truncated)
+        prompt = self._build_prompt(template, extracted, job_url, page_content or "")
+        logger.info(f"[detection:prompt] {prompt}")
         result = self._call_ai_text(prompt)
 
         has_scraper = (
@@ -334,7 +329,7 @@ class AutoApplyOrchestrator:
             if apply_clicked:
                 await asyncio.sleep(2)
                 new_text = await scraper._page.inner_text("body")
-                new_prompt = self._build_prompt(template, extracted, job_url, _truncate_page(new_text))
+                new_prompt = self._build_prompt(template, extracted, job_url, new_text)
                 form_result = self._call_ai_text(new_prompt)
                 if form_result:
                     result = form_result
@@ -591,6 +586,8 @@ class AutoApplyOrchestrator:
 
         prompt = "\n".join(prompt_parts)
 
+        logger.info(f"[skill:{skill_name}] starting")
+        t0 = time.monotonic()
         try:
             result = subprocess.run(
                 [
@@ -605,19 +602,23 @@ class AutoApplyOrchestrator:
                 cwd=str(job_desc_output_dir),
                 timeout=600,
             )
-            skill_log = self.config.logs_dir / f"{skill_name.replace('-', '_')}_phase2_run.log"
-            with open(skill_log, 'w', encoding='utf-8') as f:
-                f.write(result.stdout or "")
+            elapsed = time.monotonic() - t0
+            for line in (result.stdout or "").splitlines():
+                if line.strip():
+                    logger.info(f"[skill:{skill_name}] {line}")
+            for line in (result.stderr or "").splitlines():
+                if line.strip():
+                    logger.warning(f"[skill:{skill_name}][stderr] {line}")
             if result.returncode != 0:
-                logger.warning(
-                    f"claude CLI non-zero exit for /{skill_name}: {result.stderr[:500]}"
-                )
+                logger.warning(f"[skill:{skill_name}] exited with code {result.returncode} in {elapsed:.1f}s")
+            else:
+                logger.info(f"[skill:{skill_name}] done in {elapsed:.1f}s")
         except FileNotFoundError:
             raise FileNotFoundError(
                 "claude CLI not found in PATH — install Claude Code to use the 'claude' provider"
             )
         except subprocess.TimeoutExpired:
-            logger.warning(f"claude CLI timed out for /{skill_name}")
+            logger.warning(f"[skill:{skill_name}] timed out after 600s")
             return None
 
         # Post-processing

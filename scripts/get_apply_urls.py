@@ -35,6 +35,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.config import get_config
+from src.logging_config import setup_logging, get_logger
 from src.sheets import SheetsClient
 
 
@@ -95,6 +96,8 @@ def main() -> None:
         sys.exit(1)
 
     cfg = get_config()
+    setup_logging("get_apply_urls", cfg, console=False)
+    logger = get_logger(__name__)
     client = SheetsClient(cfg)
     output_dir = cfg.job_desc_output_dir
 
@@ -118,7 +121,7 @@ def main() -> None:
     try:
         target_rows = [int(r) for r in args]
     except ValueError:
-        print("Error: all arguments must be integer row numbers (or --auto)", file=sys.stderr)
+        logger.error("all arguments must be integer row numbers (or --auto)")
         sys.exit(1)
 
     all_jobs = client.get_all_jobs()

@@ -12,16 +12,25 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from src.config import get_config
+from src.logging_config import setup_logging, get_logger
+
 
 def main() -> None:
+    cfg = get_config()
+    setup_logging("update_filled_forms", cfg, console=False)
+    logger = get_logger(__name__)
+
     if len(sys.argv) < 4:
-        print("Usage: update_filled_forms.py <row> <company> <position>", file=sys.stderr)
+        logger.error("Usage: update_filled_forms.py <row> <company> <position>")
         sys.exit(1)
 
     try:
         row = int(sys.argv[1])
     except ValueError:
-        print(f"Invalid row number: {sys.argv[1]}", file=sys.stderr)
+        logger.error(f"Invalid row number: {sys.argv[1]}")
         sys.exit(0)
 
     company = sys.argv[2]
@@ -40,7 +49,7 @@ def main() -> None:
     # Avoid duplicate entries for the same row on the same day
     for entry in entries:
         if entry.get("row") == row and entry.get("filled_at") == today_str:
-            print(f"Row {row} already recorded for {today_str} — skipping.")
+            logger.info(f"Row {row} already recorded for {today_str} — skipping.")
             sys.exit(0)
 
     entries.append({
@@ -51,7 +60,7 @@ def main() -> None:
     })
 
     data_path.write_text(json.dumps(entries, indent=2), encoding="utf-8")
-    print(f"Recorded: row {row} ({company} / {position}) filled on {today_str}")
+    logger.info(f"Recorded: row {row} ({company} / {position}) filled on {today_str}")
 
 
 if __name__ == "__main__":

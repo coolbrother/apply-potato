@@ -5,7 +5,7 @@ Job details:
 - Position: {title}
 - URL: {url}
 
-Page content (first 4000 + last 4000 chars):
+Page content:
 {page_content}
 
 {screenshot_instruction}

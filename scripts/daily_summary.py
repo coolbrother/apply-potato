@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import httpx
 
 from src.config import get_config
+from src.logging_config import setup_logging, get_logger
 from src.sheets import get_sheets_client
 
 
@@ -51,9 +52,11 @@ def _stem(row_num: int, company: str) -> str:
 
 def main() -> None:
     config = get_config()
+    setup_logging("daily_summary", config, console=False)
+    logger = get_logger(__name__)
     webhook_url = config.discord.form_fill_webhook_url
     if not webhook_url:
-        print("Error: FORM_FILL_DISCORD_WEBHOOK not set in .env", file=sys.stderr)
+        logger.error("FORM_FILL_DISCORD_WEBHOOK not set in .env")
         sys.exit(1)
 
     sheets = get_sheets_client()
@@ -122,10 +125,10 @@ def main() -> None:
     try:
         resp = httpx.post(webhook_url, json={"content": msg}, timeout=10.0)
         resp.raise_for_status()
-        print("Daily summary sent.")
+        logger.info("Daily summary sent.")
         sys.exit(0)
     except Exception as e:
-        print(f"Error sending Discord message: {e}", file=sys.stderr)
+        logger.error(f"Error sending Discord message: {e}")
         sys.exit(1)
 
 

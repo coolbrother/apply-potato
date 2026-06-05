@@ -17,6 +17,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import httpx
 
+from src.config import get_config
+from src.logging_config import setup_logging, get_logger
+
 
 def main() -> None:
     parser = argparse.ArgumentParser()
@@ -24,23 +27,23 @@ def main() -> None:
     parser.add_argument("--webhook", default="", help="Discord webhook URL (overrides config)")
     args = parser.parse_args()
 
-    webhook_url = args.webhook
-    if not webhook_url:
-        from src.config import get_config
-        cfg = get_config()
-        webhook_url = cfg.discord.form_fill_webhook_url
+    cfg = get_config()
+    setup_logging("send_discord", cfg, console=False)
+    logger = get_logger(__name__)
+
+    webhook_url = args.webhook or cfg.discord.form_fill_webhook_url
 
     if not webhook_url:
-        print("Error: no webhook URL provided and DISCORD_WEBHOOK_URL not set in .env", file=sys.stderr)
+        logger.error("no webhook URL provided and DISCORD_WEBHOOK_URL not set in .env")
         sys.exit(1)
 
     try:
         resp = httpx.post(webhook_url, json={"content": args.message}, timeout=10.0)
         resp.raise_for_status()
-        print("Discord notification sent.")
+        logger.info("Discord notification sent.")
         sys.exit(0)
     except Exception as e:
-        print(f"Error sending Discord notification: {e}", file=sys.stderr)
+        logger.error(f"Error sending Discord notification: {e}")
         sys.exit(1)
 
 

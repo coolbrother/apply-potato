@@ -51,8 +51,8 @@ def setup_logging(
     # Clear existing handlers to avoid duplicates
     root_logger.handlers.clear()
 
-    # File handler with daily rotation at midnight
-    log_file = config.logs_dir / f"{log_name}.log"
+    # Single combined log — every pipeline writes here
+    log_file = config.logs_dir / "apply_potato.log"
     file_handler = TimedRotatingFileHandler(
         log_file,
         when="midnight",
@@ -71,8 +71,7 @@ def setup_logging(
         console_handler.setFormatter(formatter)
         root_logger.addHandler(console_handler)
 
-    # Log startup message
-    root_logger.info(f"Logging initialized: level={config.log_level}, file={log_file}")
+    root_logger.info(f"Logging initialized: level={config.log_level}, component={log_name}")
 
     return root_logger
 
