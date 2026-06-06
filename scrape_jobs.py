@@ -30,6 +30,7 @@ from src.config import get_config, Config
 from src.logging_config import setup_logging
 from src.github_parser import GitHubParser, JobListing
 from src.newsletter_parser import NewsletterParser
+from src.sheets_job_list_parser import SheetsJobListParser
 from src.scraper import PlaywrightScraper
 from src.ai_extractor import AIExtractor, ExtractedJob
 from src.deduplication import DeduplicationChecker, get_dedup_checker, normalize_url
@@ -61,6 +62,9 @@ class JobScraper:
         self.ai_extractor = AIExtractor(self.config)
         self.dedup_checker = get_dedup_checker(self.config)
         self.sheets_client = get_sheets_client()
+        self.job_list_parser: Optional[SheetsJobListParser] = (
+            SheetsJobListParser(self.config) if self.config.job_list_sheet_id else None
+        )
 
         # Log AI provider once at startup
         if self.config.ai_provider == "openai":
@@ -201,7 +205,7 @@ class JobScraper:
                 if is_blocked:
                     logger.warning(f"  Skipping: site blocked scraping (403)")
                     self.stats["scrape_failures"] += 1
-                    return False  # Counts as new job (processed but failed)
+                    return "Blocked (scrape failed)"
             except Exception as e:
                 logger.error(f"  Scrape error: {e}")
                 continue  # Retry
@@ -248,7 +252,7 @@ class JobScraper:
                 content=content or "",
                 reason="AI extraction returned no valid jobs"
             )
-            return False
+            return "Failed (extraction error)"
 
         # Process each extracted job (some postings have multiple positions)
         added_any = False
@@ -366,13 +370,51 @@ class JobScraper:
 
         return added_any
 
-    async def run(self, limit: Optional[int] = None, newsletter_only: bool = False) -> dict:
+    def _build_sources(self, only: Optional[List[str]] = None) -> List[tuple]:
+        """
+        Return a list of (name, fetch_callable) pairs for enabled sources.
+
+        Args:
+            only: If provided, restrict to these source names ("github", "newsletter", "sheets").
+                  Defaults to all enabled sources.
+        """
+        candidates = []
+
+        repo_list = [f"{r.owner_repo}@{r.branch}" for r in self.config.github_repos]
+        candidates.append((
+            "github",
+            lambda: self.github_parser.fetch_all_jobs(),
+            f"repos: {repo_list}",
+        ))
+
+        if self.job_list_parser:
+            candidates.append((
+                "sheets",
+                lambda: self.job_list_parser.fetch_all_jobs(),
+                f"sheet: {self.config.job_list_sheet_id}",
+            ))
+
+        if self.config.newsletter_enabled and self.config.newsletter_sources:
+            names = [s.name for s in self.config.newsletter_sources]
+            candidates.append((
+                "newsletter",
+                lambda: NewsletterParser(self.config).fetch_all_jobs(),
+                f"sources: {names}",
+            ))
+
+        if only is not None:
+            candidates = [(name, fn, detail) for name, fn, detail in candidates if name in only]
+
+        return candidates
+
+    async def run(self, limit: Optional[int] = None, only: Optional[List[str]] = None) -> dict:
         """
         Run the job scraping pipeline.
 
         Args:
             limit: Optional maximum number of new jobs to process
-            newsletter_only: If True, only process newsletter sources (skip GitHub)
+            only: If provided, only run these sources ("github", "newsletter", "sheets").
+                  Defaults to all enabled sources.
 
         Returns:
             Dict with statistics about the run
@@ -389,29 +431,17 @@ class JobScraper:
         logger.info("Refreshing deduplication cache from Google Sheets...")
         self.dedup_checker.refresh_cache()
 
-        # Fetch job listings from GitHub repos (unless newsletter-only mode)
+        # Fetch job listings from all active sources
         all_listings = []
-        if not newsletter_only:
-            repo_list = [f"{r.owner_repo}@{r.branch}" for r in self.config.github_repos]
-            logger.info(f"Fetching jobs from GitHub repos: {repo_list}")
+        for source_name, fetch, detail in self._build_sources(only):
+            logger.info("")
+            logger.info(f"Fetching jobs from source: {source_name} ({detail})")
             try:
-                all_listings = self.github_parser.fetch_all_jobs()
-                logger.info(f"Found {len(all_listings)} GitHub listings")
+                listings = fetch()
+                logger.info(f"  Found {len(listings)} listings")
+                all_listings.extend(listings)
             except Exception as e:
-                logger.error(f"Failed to fetch jobs from GitHub: {e}")
-                all_listings = []
-
-        # Fetch job listings from newsletters if enabled
-        if self.config.newsletter_enabled and self.config.newsletter_sources:
-            logger.info("")  # Visual separator
-            logger.info("Fetching jobs from newsletter sources...")
-            try:
-                newsletter_parser = NewsletterParser(self.config)
-                newsletter_listings = newsletter_parser.fetch_all_jobs()
-                logger.info(f"Found {len(newsletter_listings)} newsletter listings")
-                all_listings.extend(newsletter_listings)
-            except Exception as e:
-                logger.error(f"Failed to fetch jobs from newsletters: {e}")
+                logger.error(f"  Failed to fetch from {source_name}: {e}")
 
         self.stats["listings_found"] = len(all_listings)
         logger.info(f"Total listings found: {len(all_listings)}")
@@ -433,16 +463,29 @@ class JobScraper:
             new_jobs_processed = 0
             async with PlaywrightScraper(self.config) as scraper:
                 for listing in all_listings:
+                    if limit is not None and new_jobs_processed >= limit:
+                        logger.info(f"Reached limit of {limit} new jobs")
+                        break
+                    hit_limit = False
                     try:
                         result = await self._process_listing(listing, scraper)
-                        # result is None for skipped (dup/filtered), True/False for processed
+                        # result is None for skipped (dup/filtered), True/False/str for processed
                         if result is not None:
                             new_jobs_processed += 1
-                            if limit and new_jobs_processed >= limit:
-                                logger.info(f"Reached limit of {limit} new jobs")
-                                break
                     except Exception as e:
                         logger.error(f"Error processing {listing.url}: {e}")
+                        result = None
+
+                    # Write result back to job list sheet if this listing came from there
+                    if self.job_list_parser and listing.source_repo == "sheets-list":
+                        if result is None:
+                            self.job_list_parser.mark_row(listing.url, "Already Processed")
+                        elif result is True:
+                            self.job_list_parser.mark_row(listing.url, "Done")
+                        elif result is False:
+                            self.job_list_parser.mark_row(listing.url, "Filtered out")
+                        else:  # reason string (blocked, extraction error, etc.)
+                            self.job_list_parser.mark_row(listing.url, result)
 
                     # Small delay between requests
                     await asyncio.sleep(1)
@@ -465,13 +508,13 @@ class JobScraper:
         return self.stats
 
 
-def run_once(limit: Optional[int] = None, newsletter_only: bool = False, with_docs: bool = False):
+def run_once(limit: Optional[int] = None, only: Optional[List[str]] = None, with_docs: bool = False):
     """Run Phase 1. If with_docs=True, also run Phase 2 afterwards."""
     config = get_config()
     setup_logging("scrape", config, console=True)
 
     with JobScraper(config) as scraper:
-        stats = asyncio.run(scraper.run(limit=limit, newsletter_only=newsletter_only))
+        stats = asyncio.run(scraper.run(limit=limit, only=only))
 
     if with_docs:
         logger.info("")
@@ -574,8 +617,8 @@ def main():
     parser = argparse.ArgumentParser(description="ApplyPotato Job Scraper")
     parser.add_argument("--scheduled", action="store_true", help="Run on schedule")
     parser.add_argument("--limit", type=int, help="Max jobs to process")
-    parser.add_argument("--newsletter-only", action="store_true",
-                        help="Only process newsletter sources (skip GitHub)")
+    parser.add_argument("--only", type=str, metavar="SOURCES",
+                        help="Comma-separated sources to run: github, newsletter, sheets (default: all enabled)")
     parser.add_argument("--clear-filtered", action="store_true",
                         help="Clear filtered jobs cache (use when profile changes)")
     parser.add_argument("--clear-seen", action="store_true",
@@ -595,7 +638,8 @@ def main():
     elif args.url:
         run_single_url(args.url, with_docs=args.with_docs)
     else:
-        run_once(limit=args.limit, newsletter_only=args.newsletter_only, with_docs=args.with_docs)
+        only = [s.strip() for s in args.only.split(",")] if args.only else None
+        run_once(limit=args.limit, only=only, with_docs=args.with_docs)
 
 
 if __name__ == "__main__":

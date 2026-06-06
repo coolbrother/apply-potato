@@ -130,6 +130,10 @@ class Config:
     # Windows Service Account
     windows_service_password: Optional[str]  # Password for running services under user account
 
+    # Google Sheets Job List (optional input source)
+    job_list_sheet_id: Optional[str]   # Sheet ID for the Job List / Result sheet
+    job_list_sheet_tab: str            # Tab name within that sheet
+
     # Paths
     base_dir: Path = field(default_factory=lambda: Path(__file__).parent.parent)
 
@@ -448,6 +452,8 @@ def load_config(env_path: Optional[Path] = None) -> Config:
         oauth_local_port=_get_int("OAUTH_LOCAL_PORT", 8888),
         oauth_timeout_seconds=_get_int("OAUTH_TIMEOUT_SECONDS", 120),
         windows_service_password=_get_optional("WINDOWS_SERVICE_PASSWORD") or None,
+        job_list_sheet_id=_get_optional("JOB_LIST_SHEET_ID") or None,
+        job_list_sheet_tab=_get_optional("JOB_LIST_SHEET_TAB", "Sheet1"),
         base_dir=base_dir,
     )
 

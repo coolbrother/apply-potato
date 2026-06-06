@@ -434,14 +434,31 @@ def install_windows_scheduled_task(task_key: str) -> bool:
     script_path = PROJECT_ROOT / task["script"]
     time_str = f"{task['hour']:02d}:{task['minute']:02d}"
 
+    config = get_config()
+    username = os.environ.get("USERNAME", "sz")
+
+    # Wrap the command so the working directory is always PROJECT_ROOT.
+    # schtasks /Create has no /SD (start-in) flag, so we use cmd /c cd + python.
+    tr = f'cmd /c "cd /d "{PROJECT_ROOT}" && "{python_path}" "{script_path}""'
+
     cmd = [
         "schtasks", "/Create",
         "/TN", task["win_task_name"],
-        "/TR", f'"{python_path}" "{script_path}"',
+        "/TR", tr,
         "/SC", "DAILY",
         "/ST", time_str,
         "/F",  # force-overwrite if already exists
     ]
+
+    # If a service password is configured, run as the named user so the task
+    # fires whether or not the user has an active desktop session.
+    if config.windows_service_password:
+        cmd += ["/RU", username, "/RP", config.windows_service_password]
+    else:
+        print_warning(
+            "WINDOWS_SERVICE_PASSWORD not set — task will only run when logged in interactively. "
+            "Set it in .env to fix this."
+        )
 
     try:
         result = subprocess.run(cmd, capture_output=True, text=True)

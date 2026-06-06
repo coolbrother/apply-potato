@@ -17,7 +17,6 @@ from src.auto_apply import (
     _format_detection_note,
     _parse_json_response,
     _sanitize_name,
-    _truncate_page,
 )
 from src.config import get_config
 
@@ -131,23 +130,6 @@ class TestSanitizeName:
 
     def test_handles_empty(self):
         assert _sanitize_name("") == ""
-
-
-class TestTruncatePage:
-
-    def test_short_content_unchanged(self):
-        text = "Hello world"
-        assert _truncate_page(text) == text
-
-    def test_long_content_truncated(self):
-        result = _truncate_page("A" * 10000)
-        assert "[truncated]" in result
-
-    def test_preserves_start_and_end(self):
-        text = "START" + "x" * 4000 + "z" * 5000 + "y" * 4000 + "END"
-        result = _truncate_page(text)
-        assert result.startswith("START")
-        assert result.endswith("END")
 
 
 # ---------------------------------------------------------------------------
