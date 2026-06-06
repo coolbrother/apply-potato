@@ -104,6 +104,7 @@ skills/**/node_modules/
 # Session/temp files
 *.md
 !README.md
+!skills/**/*.md
 
 # Browser profile (persistent Playwright session with cookies/login)
 browser-profile/

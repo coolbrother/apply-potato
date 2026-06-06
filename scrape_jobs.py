@@ -22,6 +22,7 @@ import asyncio
 import logging
 import time
 from datetime import datetime
+from pathlib import Path
 from typing import List, Optional
 
 from apscheduler.schedulers.blocking import BlockingScheduler
@@ -38,6 +39,7 @@ from src.filters import passes_hard_filters
 from src.scoring import calculate_fit_score
 from src.sheets import SheetsClient, get_sheets_client
 from src.notifications import notify_dream_company_job, is_dream_company
+from src.project_fit import run_project_fit_skill
 
 
 logger = logging.getLogger(__name__)
@@ -309,6 +311,13 @@ class JobScraper:
                         notify_dream_company_job(extracted.company, extracted.title, final_url)
                     except Exception as discord_error:
                         logger.warning(f"  Failed to send Discord notification: {discord_error}")
+
+                # Update project-fit report for dream jobs
+                if is_dream:
+                    try:
+                        run_project_fit_skill(final_url, "apply-potato", Path(__file__).parent, page_content=content)
+                    except Exception as e:
+                        logger.warning(f"  project-fit skill failed: {e}")
 
                 # Phase 1: detect requirements and save job description
                 needs_resume = False

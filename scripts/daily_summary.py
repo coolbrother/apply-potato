@@ -62,8 +62,8 @@ def main() -> None:
     sheets = get_sheets_client()
     jobs = sheets.get_all_jobs()
 
-    today = datetime.now().date()
-    today_str = today.strftime("%m/%d/%Y")
+    yesterday = datetime.now().date() - timedelta(days=1)
+    yesterday_str = yesterday.strftime("%m/%d/%Y")
 
     # row_number → status lookup for cross-referencing filled_forms.json
     row_status = {job.row_number: job.status for job in jobs}
@@ -76,22 +76,23 @@ def main() -> None:
     output_dir = config.job_desc_output_dir
 
     for job in jobs:
-        if _parse_date(job.added_date) == today:
+        if _parse_date(job.added_date) == yesterday:
             discovered_today += 1
 
-        if job.application_date and _parse_date(job.application_date) == today:
+        if job.application_date and _parse_date(job.application_date) == yesterday:
             applied_today += 1
 
         if job.status == "New":
             new_total += 1
-            stem = _stem(job.row_number, job.company)
-            folder = output_dir / stem
-            has_docs = (
-                (folder / f"{stem}_Resume.docx").exists()
-                or (folder / f"{stem}_Cover_Letter.docx").exists()
-            )
-            if has_docs:
-                docs_ready += 1
+            if _parse_date(job.added_date) == yesterday:
+                stem = _stem(job.row_number, job.company)
+                folder = output_dir / stem
+                has_docs = (
+                    (folder / f"{stem}_Resume.docx").exists()
+                    or (folder / f"{stem}_Cover_Letter.docx").exists()
+                )
+                if has_docs:
+                    docs_ready += 1
 
     # Count forms filled today that haven't been submitted yet
     filled_not_submitted = 0
@@ -100,15 +101,14 @@ def main() -> None:
         try:
             entries = json.loads(filled_path.read_text(encoding="utf-8"))
             for entry in entries:
-                if entry.get("filled_at") == today_str:
+                if entry.get("filled_at") == yesterday_str:
                     status = row_status.get(entry.get("row"), "")
                     if status != "Applied":
                         filled_not_submitted += 1
         except (json.JSONDecodeError, OSError):
             pass
 
-    now = datetime.now()
-    date_label = f"{now.strftime('%B')} {now.day}, {now.year}"
+    date_label = f"{yesterday.strftime('%B')} {yesterday.day}, {yesterday.year}"
     divider = "─" * 35
 
     msg = (

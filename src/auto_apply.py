@@ -252,7 +252,7 @@ class AutoApplyOrchestrator:
         project_root = Path(__file__).parent.parent
         try:
             result = subprocess.run(
-                ["claude", "-p", prompt],
+                ["claude", "-p", prompt, "--allowedTools", ""],
                 capture_output=True,
                 text=True,
                 cwd=str(project_root),
