@@ -105,6 +105,7 @@ skills/**/node_modules/
 *.md
 !README.md
 !skills/**/*.md
+!CLAUDE.md
 
 # Browser profile (persistent Playwright session with cookies/login)
 browser-profile/

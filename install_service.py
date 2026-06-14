@@ -16,6 +16,7 @@ import sys
 import argparse
 import subprocess
 import shutil
+import tempfile
 import urllib.request
 import json
 from pathlib import Path
@@ -60,11 +61,10 @@ SCHEDULED_TASKS = {
     "daily_summary": {
         "win_task_name": r"ApplyPotato\DailySummary",
         "name": "ApplyPotato Daily Summary",
-        "description": "Sends a midnight Discord summary of today's pipeline activity",
+        "description": "Sends a Discord summary of today's pipeline activity at 9am and 5pm",
         "script": "scripts/daily_summary.py",
         "plist_id": "com.applypotato.daily_summary",
-        "hour": 0,
-        "minute": 0,
+        "times": [{"hour": 9, "minute": 0}, {"hour": 17, "minute": 0}],
     }
 }
 
@@ -427,49 +427,94 @@ def get_windows_service_status(service_key: str) -> str:
 # Windows Scheduled Tasks (one-shot, time-triggered)
 # =============================================================================
 
+def _build_task_xml(task: dict, python_path: Path, script_path: Path, username: str, password: str | None) -> str:
+    """Build a Windows Task Scheduler XML definition with one trigger per time entry."""
+    triggers_xml = ""
+    for t in task["times"]:
+        triggers_xml += (
+            f"\n        <CalendarTrigger>"
+            f"\n          <StartBoundary>2000-01-01T{t['hour']:02d}:{t['minute']:02d}:00</StartBoundary>"
+            f"\n          <ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay>"
+            f"\n        </CalendarTrigger>"
+        )
+    user_block = f"<UserId>{username}</UserId>" if username else ""
+    logon_type = "Password" if password else "InteractiveToken"
+    return (
+        '<?xml version="1.0" encoding="UTF-16"?>\n'
+        '<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">\n'
+        f"  <Triggers>{triggers_xml}\n  </Triggers>\n"
+        "  <Actions Context=\"Author\">\n"
+        "    <Exec>\n"
+        "      <Command>cmd.exe</Command>\n"
+        f'      <Arguments>/c "cd /d &quot;{PROJECT_ROOT}&quot; &amp;&amp; &quot;{python_path}&quot; &quot;{script_path}&quot;"</Arguments>\n'
+        "    </Exec>\n"
+        "  </Actions>\n"
+        "  <Principals>\n"
+        '    <Principal id="Author">\n'
+        f"      {user_block}\n"
+        f"      <LogonType>{logon_type}</LogonType>\n"
+        "    </Principal>\n"
+        "  </Principals>\n"
+        "  <Settings>\n"
+        "    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>\n"
+        "    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>\n"
+        "    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>\n"
+        "    <ExecutionTimeLimit>PT1H</ExecutionTimeLimit>\n"
+        "    <Enabled>true</Enabled>\n"
+        "  </Settings>\n"
+        "</Task>"
+    )
+
+
 def install_windows_scheduled_task(task_key: str) -> bool:
-    """Register a one-shot daily scheduled task via schtasks."""
+    """Register a daily scheduled task via schtasks using an XML definition."""
     task = SCHEDULED_TASKS[task_key]
     python_path = VENV_DIR / "Scripts" / "python.exe"
     script_path = PROJECT_ROOT / task["script"]
-    # time_str = f"{task['hour']:02d}:{task['minute']:02d}"
 
     config = get_config()
     username = os.environ.get("USERNAME", "sz")
+    password = config.windows_service_password
 
-    # Wrap the command so the working directory is always PROJECT_ROOT.
-    # schtasks /Create has no /SD (start-in) flag, so we use cmd /c cd + python.
-    tr = f'cmd /c "cd /d "{PROJECT_ROOT}" && "{python_path}" "{script_path}""'
-
-    cmd = [
-        "schtasks", "/Create",
-        "/TN", task["win_task_name"],
-        "/TR", tr,
-        "/SC", "HOURLY",
-        # "/ST", time_str,
-        "/F",  # force-overwrite if already exists
-    ]
-
-    # If a service password is configured, run as the named user so the task
-    # fires whether or not the user has an active desktop session.
-    if config.windows_service_password:
-        cmd += ["/RU", username, "/RP", config.windows_service_password]
-    else:
+    if not password:
         print_warning(
             "WINDOWS_SERVICE_PASSWORD not set — task will only run when logged in interactively. "
             "Set it in .env to fix this."
         )
 
+    xml_content = _build_task_xml(task, python_path, script_path, username, password)
+
+    tmp_path = None
     try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".xml", encoding="utf-16", delete=False
+        ) as tmp:
+            tmp.write(xml_content)
+            tmp_path = tmp.name
+
+        cmd = ["schtasks", "/Create", "/TN", task["win_task_name"], "/XML", tmp_path, "/F"]
+        if password:
+            cmd += ["/RU", username, "/RP", password]
+
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
             print_error(f"Failed to create scheduled task: {result.stderr or result.stdout}")
             return False
-        print_success(f"Scheduled: {task['name']} at {""} daily")
+
+        times_str = " and ".join(
+            f"{t['hour']:02d}:{t['minute']:02d}" for t in task["times"]
+        )
+        print_success(f"Scheduled: {task['name']} at {times_str} daily")
         return True
     except Exception as e:
         print_error(f"Failed to create scheduled task: {e}")
         return False
+    finally:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
 
 
 def uninstall_windows_scheduled_task(task_key: str) -> bool:
@@ -747,6 +792,17 @@ def create_calendar_plist_content(task_key: str) -> str:
     stdout_log = LOGS_DIR / f"{task_key}_stdout.log"
     stderr_log = LOGS_DIR / f"{task_key}_stderr.log"
 
+    interval_entries = ""
+    for t in task["times"]:
+        interval_entries += (
+            "        <dict>\n"
+            "            <key>Hour</key>\n"
+            f"            <integer>{t['hour']}</integer>\n"
+            "            <key>Minute</key>\n"
+            f"            <integer>{t['minute']}</integer>\n"
+            "        </dict>\n"
+        )
+
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -764,12 +820,8 @@ def create_calendar_plist_content(task_key: str) -> str:
     <string>{PROJECT_ROOT}</string>
 
     <key>StartCalendarInterval</key>
-    <dict>
-        <key>Hour</key>
-        <integer>{task["hour"]}</integer>
-        <key>Minute</key>
-        <integer>{task["minute"]}</integer>
-    </dict>
+    <array>
+{interval_entries}    </array>
 
     <key>StandardOutPath</key>
     <string>{stdout_log}</string>

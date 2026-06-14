@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Send a midnight Discord summary of today's pipeline activity.
+Send a Discord summary of today's pipeline activity.
 
-Scheduled via Windows Task Scheduler at 00:00 daily:
+Scheduled via Windows Task Scheduler at 09:00 and 17:00 daily:
     python scripts/daily_summary.py
 
 Summary covers:
@@ -62,8 +62,8 @@ def main() -> None:
     sheets = get_sheets_client()
     jobs = sheets.get_all_jobs()
 
-    yesterday = datetime.now().date() - timedelta(days=1)
-    yesterday_str = yesterday.strftime("%m/%d/%Y")
+    today = datetime.now().date()
+    today_str = today.strftime("%m/%d/%Y")
 
     # row_number → status lookup for cross-referencing filled_forms.json
     row_status = {job.row_number: job.status for job in jobs}
@@ -77,17 +77,17 @@ def main() -> None:
     output_dir = config.job_desc_output_dir
 
     for job in jobs:
-        if _parse_date(job.added_date) == yesterday:
+        if _parse_date(job.added_date) == today:
             discovered_today += 1
             if job.dream == "Yes":
                 dream_today += 1
 
-        if job.application_date and _parse_date(job.application_date) == yesterday:
+        if job.application_date and _parse_date(job.application_date) == today:
             applied_today += 1
 
         if job.status == "New":
             new_total += 1
-            if _parse_date(job.added_date) == yesterday:
+            if _parse_date(job.added_date) == today:
                 stem = _stem(job.row_number, job.company)
                 folder = output_dir / stem
                 has_docs = (
@@ -104,18 +104,18 @@ def main() -> None:
         try:
             entries = json.loads(filled_path.read_text(encoding="utf-8"))
             for entry in entries:
-                if entry.get("filled_at") == yesterday_str:
+                if entry.get("filled_at") == today_str:
                     status = row_status.get(entry.get("row"), "")
                     if status != "Applied":
                         filled_not_submitted += 1
         except (json.JSONDecodeError, OSError):
             pass
 
-    date_label = f"{yesterday.strftime('%B')} {yesterday.day}, {yesterday.year}"
+    date_label = f"{today.strftime('%B')} {today.day}, {today.year}"
     divider = "─" * 35
 
     msg = (
-        f"📊 **Daily Summary — {date_label}**\n"
+        f"📊 **Pipeline Summary — {date_label}**\n"
         f"{divider}\n"
         f"🔍 Discovered today:       **{discovered_today}**\n"
         f"⭐ Dream companies:         **{dream_today}**\n"
@@ -129,7 +129,7 @@ def main() -> None:
     try:
         resp = httpx.post(webhook_url, json={"content": msg}, timeout=10.0)
         resp.raise_for_status()
-        logger.info("Daily summary sent.")
+        logger.info("Pipeline summary sent.")
         sys.exit(0)
     except Exception as e:
         logger.error(f"Error sending Discord message: {e}")

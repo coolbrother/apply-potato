@@ -415,8 +415,13 @@ def load_config(env_path: Optional[Path] = None) -> Config:
     job_desc_output_dir = Path(raw_job_desc_dir)
 
     # Base resume path (Phase 2 — optional at load time; validated at use time by generate_docs)
+    # Relative paths are resolved against job_desc_output_dir; absolute paths used as-is.
     raw_base_resume = _get_optional("BASE_RESUME_PATH", "")
-    base_resume_path = Path(raw_base_resume) if raw_base_resume else Path("")
+    if raw_base_resume:
+        _rp = Path(raw_base_resume)
+        base_resume_path = _rp if _rp.is_absolute() else (job_desc_output_dir / _rp).resolve()
+    else:
+        base_resume_path = Path("")
 
     # Build config object
     config = Config(

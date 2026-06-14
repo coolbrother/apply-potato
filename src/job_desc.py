@@ -138,6 +138,10 @@ def commit_and_push_job_folder(folder: Path, repo_dir: Path, stem: str) -> bool:
             check=True, capture_output=True,
         )
         subprocess.run(
+            ["git", "-C", str(repo_dir), "pull", "--rebase"],
+            check=True, capture_output=True,
+        )
+        subprocess.run(
             ["git", "-C", str(repo_dir), "push"],
             check=True, capture_output=True,
         )
