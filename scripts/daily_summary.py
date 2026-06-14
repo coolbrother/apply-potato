@@ -69,6 +69,7 @@ def main() -> None:
     row_status = {job.row_number: job.status for job in jobs}
 
     discovered_today = 0
+    dream_today = 0
     applied_today = 0
     new_total = 0
     docs_ready = 0
@@ -78,6 +79,8 @@ def main() -> None:
     for job in jobs:
         if _parse_date(job.added_date) == yesterday:
             discovered_today += 1
+            if job.dream == "Yes":
+                dream_today += 1
 
         if job.application_date and _parse_date(job.application_date) == yesterday:
             applied_today += 1
@@ -115,6 +118,7 @@ def main() -> None:
         f"📊 **Daily Summary — {date_label}**\n"
         f"{divider}\n"
         f"🔍 Discovered today:       **{discovered_today}**\n"
+        f"⭐ Dream companies:         **{dream_today}**\n"
         f"📄 Docs ready (Phase 2):   **{docs_ready}**\n"
         f"📋 Filled, not submitted:  **{filled_not_submitted}**\n"
         f"✅ Applied today:           **{applied_today}**\n"

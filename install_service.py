@@ -432,7 +432,7 @@ def install_windows_scheduled_task(task_key: str) -> bool:
     task = SCHEDULED_TASKS[task_key]
     python_path = VENV_DIR / "Scripts" / "python.exe"
     script_path = PROJECT_ROOT / task["script"]
-    time_str = f"{task['hour']:02d}:{task['minute']:02d}"
+    # time_str = f"{task['hour']:02d}:{task['minute']:02d}"
 
     config = get_config()
     username = os.environ.get("USERNAME", "sz")
@@ -445,8 +445,8 @@ def install_windows_scheduled_task(task_key: str) -> bool:
         "schtasks", "/Create",
         "/TN", task["win_task_name"],
         "/TR", tr,
-        "/SC", "DAILY",
-        "/ST", time_str,
+        "/SC", "HOURLY",
+        # "/ST", time_str,
         "/F",  # force-overwrite if already exists
     ]
 
@@ -465,7 +465,7 @@ def install_windows_scheduled_task(task_key: str) -> bool:
         if result.returncode != 0:
             print_error(f"Failed to create scheduled task: {result.stderr or result.stdout}")
             return False
-        print_success(f"Scheduled: {task['name']} at {time_str} daily")
+        print_success(f"Scheduled: {task['name']} at {""} daily")
         return True
     except Exception as e:
         print_error(f"Failed to create scheduled task: {e}")
