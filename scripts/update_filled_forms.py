@@ -35,7 +35,9 @@ def main() -> None:
 
     company = sys.argv[2]
     position = sys.argv[3]
-    today_str = datetime.now().strftime("%m/%d/%Y")
+    now = datetime.now()
+    now_str = now.strftime("%m/%d/%Y %H:%M:%S")
+    today_str = now.strftime("%m/%d/%Y")
 
     data_path = Path(__file__).parent.parent / "data" / "filled_forms.json"
 
@@ -46,9 +48,10 @@ def main() -> None:
         except (json.JSONDecodeError, OSError):
             entries = []
 
-    # Avoid duplicate entries for the same row on the same day
+    # Avoid duplicate entries for the same row on the same day (compare on the date
+    # portion, since filled_at now carries a time component).
     for entry in entries:
-        if entry.get("row") == row and entry.get("filled_at") == today_str:
+        if entry.get("row") == row and str(entry.get("filled_at", "")).split(" ")[0] == today_str:
             logger.info(f"Row {row} already recorded for {today_str} — skipping.")
             sys.exit(0)
 
@@ -56,11 +59,11 @@ def main() -> None:
         "row": row,
         "company": company,
         "position": position,
-        "filled_at": today_str,
+        "filled_at": now_str,
     })
 
     data_path.write_text(json.dumps(entries, indent=2), encoding="utf-8")
-    logger.info(f"Recorded: row {row} ({company} / {position}) filled on {today_str}")
+    logger.info(f"Recorded: row {row} ({company} / {position}) filled at {now_str}")
 
 
 if __name__ == "__main__":

@@ -348,10 +348,13 @@ class SheetsClient:
 
         jobs_sheet_id = self._retry_with_backoff(get_sheet_id)
 
-        # Date columns (0-indexed):
-        # D=3 (job_posting_date), F=5 (application_date), G=6 (oa_date),
-        # H=7 (phone_date), I=8 (tech_date), P=15 (deadline), R=17 (added_date)
-        date_column_indices = [3, 5, 6, 7, 8, 15, 17]
+        # Date-only columns (0-indexed):
+        # D=3 (job_posting_date), G=6 (oa_date), H=7 (phone_date),
+        # I=8 (tech_date), P=15 (deadline)
+        date_column_indices = [3, 6, 7, 8, 15]
+        # Date+time columns: F=5 (application_date), R=17 (added_date) — these store a
+        # real timestamp so the daily summary can window activity within the day.
+        datetime_column_indices = [5, 17]
 
         requests = []
         for col_idx in date_column_indices:
@@ -367,6 +370,26 @@ class SheetsClient:
                             "numberFormat": {
                                 "type": "DATE",
                                 "pattern": "M/d/yyyy"
+                            }
+                        }
+                    },
+                    "fields": "userEnteredFormat.numberFormat"
+                }
+            })
+
+        for col_idx in datetime_column_indices:
+            requests.append({
+                "repeatCell": {
+                    "range": {
+                        "sheetId": jobs_sheet_id,
+                        "startColumnIndex": col_idx,
+                        "endColumnIndex": col_idx + 1
+                    },
+                    "cell": {
+                        "userEnteredFormat": {
+                            "numberFormat": {
+                                "type": "DATE_TIME",
+                                "pattern": "M/d/yyyy H:mm:ss"
                             }
                         }
                     },
@@ -509,7 +532,7 @@ class SheetsClient:
         if not row[COLUMNS["status"]]:
             row[COLUMNS["status"]] = STATUS_NEW
         if not row[COLUMNS["added_date"]]:
-            row[COLUMNS["added_date"]] = datetime.now().strftime("%m/%d/%Y")
+            row[COLUMNS["added_date"]] = datetime.now().strftime("%m/%d/%Y %H:%M:%S")
 
         def append():
             result = service.spreadsheets().values().append(

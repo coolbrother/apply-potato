@@ -176,7 +176,7 @@ class GmailChecker:
         # Update relevant date column
         date_column = CATEGORY_TO_DATE_COLUMN.get(category)
         if date_column:
-            date_str = datetime.now().strftime("%m/%d/%Y")
+            date_str = datetime.now().strftime("%m/%d/%Y %H:%M:%S")
             if classification.date_mentioned:
                 # Try to use the date from the email
                 try:

@@ -1,22 +1,32 @@
 #!/usr/bin/env python3
 """
-Send a Discord summary of today's pipeline activity.
+Send a Discord summary of recent pipeline activity, windowed by run time.
 
 Scheduled via Windows Task Scheduler at 09:00 and 17:00 daily:
     python scripts/daily_summary.py
 
-Summary covers:
-  - Jobs discovered today (added_date == today)
+Each run reports only what happened since the previous run:
+  - 5pm (evening) run -> window is [today 09:00, now]
+  - 9am (morning) run -> window is [yesterday 17:00, now]
+
+The window is inferred from the clock (morning if hour < 13, else evening) and can
+be overridden with --window for manual/test runs.
+
+Windowed metrics (by timestamp stored in the Sheet / filled_forms.json):
+  - Jobs discovered in window (added_date within window)
+  - Dream-company jobs in window
   - Jobs with docs ready / Phase 2 complete (status New + docs on disk)
   - Forms filled but not yet submitted (filled_forms.json, status != Applied)
-  - Jobs applied today (application_date == today)
+  - Jobs applied in window (application_date within window)
+Running total (NOT windowed):
   - Total pending (status == New)
 """
 
+import argparse
 import json
 import re
 import sys
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -28,17 +38,37 @@ from src.logging_config import setup_logging, get_logger
 from src.sheets import get_sheets_client
 
 
-def _parse_date(value) -> date | None:
-    """Parse a Sheets cell value to a date. Handles serial numbers and MM/DD/YYYY strings."""
+def _parse_dt(value) -> datetime | None:
+    """Parse a Sheets/JSON cell value to a datetime.
+
+    Handles Google Sheets serial numbers (read via valueRenderOption=FORMULA, which
+    carry a fractional part for the time), "M/D/YYYY H:MM:SS" and "M/D/YYYY" strings,
+    and semicolon-separated multi-date cells (the most recent / last segment is used).
+    Returns None if unparseable.
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+
+    # Semicolon-separated cells (e.g. "6/13/2026; 6/14/2026 10:00:00") -> use last
+    if ";" in text:
+        text = text.split(";")[-1].strip()
+
+    # Google Sheets serial number (days since 1899-12-30), with fractional time
     try:
-        serial = float(str(value).strip())
-        return (datetime(1899, 12, 30) + timedelta(days=serial)).date()
+        serial = float(text)
+        return datetime(1899, 12, 30) + timedelta(days=serial)
     except (ValueError, TypeError):
         pass
-    try:
-        return datetime.strptime(str(value).strip(), "%m/%d/%Y").date()
-    except (ValueError, AttributeError):
-        return None
+
+    for fmt in ("%m/%d/%Y %H:%M:%S", "%m/%d/%Y"):
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+    return None
 
 
 def _sanitize(s: str) -> str:
@@ -50,7 +80,32 @@ def _stem(row_num: int, company: str) -> str:
     return f"{row_num}_{_sanitize(company)}"
 
 
+def _resolve_window(window: str | None, now: datetime) -> tuple[str, datetime, datetime]:
+    """Return (window_name, start, end) for the summary.
+
+    If window is None, infer from the clock: morning if before 13:00, else evening.
+    """
+    if window is None:
+        window = "morning" if now.hour < 13 else "evening"
+
+    if window == "evening":
+        start = now.replace(hour=9, minute=0, second=0, microsecond=0)
+    else:  # morning
+        start = (now - timedelta(days=1)).replace(hour=17, minute=0, second=0, microsecond=0)
+
+    return window, start, now
+
+
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Send a windowed Discord pipeline summary.")
+    parser.add_argument(
+        "--window",
+        choices=["morning", "evening"],
+        default=None,
+        help="Force the summary window. Defaults to clock inference (morning if <13:00).",
+    )
+    args = parser.parse_args()
+
     config = get_config()
     setup_logging("daily_summary", config, console=False)
     logger = get_logger(__name__)
@@ -59,35 +114,34 @@ def main() -> None:
         logger.error("FORM_FILL_DISCORD_WEBHOOK not set in .env")
         sys.exit(1)
 
+    now = datetime.now()
+    window, start, end = _resolve_window(args.window, now)
+    logger.info(f"Window: {window} [{start.isoformat()} .. {end.isoformat()}]")
+
+    def in_window(dt: datetime | None) -> bool:
+        return dt is not None and start <= dt <= end
+
     sheets = get_sheets_client()
     jobs = sheets.get_all_jobs()
 
-    today = datetime.now().date()
-    today_str = today.strftime("%m/%d/%Y")
-
-    # row_number → status lookup for cross-referencing filled_forms.json
+    # row_number -> status lookup for cross-referencing filled_forms.json
     row_status = {job.row_number: job.status for job in jobs}
 
-    discovered_today = 0
-    dream_today = 0
-    applied_today = 0
+    discovered = 0
+    dream = 0
+    applied = 0
     new_total = 0
     docs_ready = 0
 
     output_dir = config.job_desc_output_dir
 
     for job in jobs:
-        if _parse_date(job.added_date) == today:
-            discovered_today += 1
+        added_dt = _parse_dt(job.added_date)
+        if in_window(added_dt):
+            discovered += 1
             if job.dream == "Yes":
-                dream_today += 1
-
-        if job.application_date and _parse_date(job.application_date) == today:
-            applied_today += 1
-
-        if job.status == "New":
-            new_total += 1
-            if _parse_date(job.added_date) == today:
+                dream += 1
+            if job.status == "New":
                 stem = _stem(job.row_number, job.company)
                 folder = output_dir / stem
                 has_docs = (
@@ -97,31 +151,43 @@ def main() -> None:
                 if has_docs:
                     docs_ready += 1
 
-    # Count forms filled today that haven't been submitted yet
+        if job.application_date and in_window(_parse_dt(job.application_date)):
+            applied += 1
+
+        if job.status == "New":
+            new_total += 1
+
+    # Count forms filled in window that haven't been submitted yet
     filled_not_submitted = 0
     filled_path = Path(__file__).parent.parent / "data" / "filled_forms.json"
     if filled_path.exists():
         try:
             entries = json.loads(filled_path.read_text(encoding="utf-8"))
             for entry in entries:
-                if entry.get("filled_at") == today_str:
+                if in_window(_parse_dt(entry.get("filled_at"))):
                     status = row_status.get(entry.get("row"), "")
                     if status != "Applied":
                         filled_not_submitted += 1
         except (json.JSONDecodeError, OSError):
             pass
 
-    date_label = f"{today.strftime('%B')} {today.day}, {today.year}"
+    # %-d / %-I are not supported on Windows; build the label manually.
+    def _fmt(dt: datetime) -> str:
+        hour12 = dt.hour % 12 or 12
+        ampm = "am" if dt.hour < 12 else "pm"
+        return f"{dt.month}/{dt.day} {hour12}:{dt.minute:02d}{ampm}"
+
+    range_label = f"{_fmt(start)} – {_fmt(end)}"
     divider = "─" * 35
 
     msg = (
-        f"📊 **Pipeline Summary — {date_label}**\n"
+        f"📊 **Pipeline Summary — {range_label}**\n"
         f"{divider}\n"
-        f"🔍 Discovered today:       **{discovered_today}**\n"
-        f"⭐ Dream companies:         **{dream_today}**\n"
+        f"🔍 Discovered:             **{discovered}**\n"
+        f"⭐ Dream companies:         **{dream}**\n"
         f"📄 Docs ready (Phase 2):   **{docs_ready}**\n"
         f"📋 Filled, not submitted:  **{filled_not_submitted}**\n"
-        f"✅ Applied today:           **{applied_today}**\n"
+        f"✅ Applied:                 **{applied}**\n"
         f"{divider}\n"
         f"📥 Total pending (New):    **{new_total}**"
     )

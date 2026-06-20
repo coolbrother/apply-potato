@@ -52,7 +52,7 @@ class MockSheetsClient:
         if not row[COLUMNS["status"]]:
             row[COLUMNS["status"]] = STATUS_NEW
         if not row[COLUMNS["added_date"]]:
-            row[COLUMNS["added_date"]] = datetime.now().strftime("%m/%d/%Y")
+            row[COLUMNS["added_date"]] = datetime.now().strftime("%m/%d/%Y %H:%M:%S")
 
         self.rows.append(row)
         return len(self.rows)  # Row number (1-indexed, includes header)
