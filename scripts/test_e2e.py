@@ -330,7 +330,7 @@ async def run_pipeline(args):
 
                 # Filter
                 logger.info(f"\n[3] HARD FILTERS")
-                passed, reason = passes_hard_filters(config.user, job)
+                passed, reason, _ = passes_hard_filters(config.user, job)
 
                 if passed:
                     logger.info(f"  Result: PASS")

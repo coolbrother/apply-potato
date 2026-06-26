@@ -482,7 +482,7 @@ def check_job_type(user_target: str, job_type: Optional[str]) -> Tuple[bool, str
     return False, f"Job type mismatch: user wants {user_target}, job is {job_type}"
 
 
-def passes_hard_filters(user: UserProfile, job: ExtractedJob) -> Tuple[bool, str]:
+def passes_hard_filters(user: UserProfile, job: ExtractedJob) -> Tuple[bool, str, str]:
     """
     Check if a job passes all hard eligibility filters.
 
@@ -491,31 +491,32 @@ def passes_hard_filters(user: UserProfile, job: ExtractedJob) -> Tuple[bool, str
         job: Extracted job data
 
     Returns:
-        Tuple of (passes, reason for failure if any)
+        Tuple of (passes, reason, category) where category is the failing filter name
+        or "none" if all passed.
     """
     # Check job type first (most common filter)
     passed, reason = check_job_type(user.target_job_type, job.job_type)
     if not passed:
         logger.debug(f"Job failed job type filter: {reason}")
-        return False, reason
+        return False, reason, "job_type"
 
     # Check class standing
     passed, reason = check_class_standing(user.class_standing, job.class_standing_requirement)
     if not passed:
         logger.debug(f"Job failed class standing filter: {reason}")
-        return False, reason
+        return False, reason, "class_standing"
 
     # Check graduation timeline
     passed, reason = check_graduation_timeline(user.graduation_date, job.graduation_timeline)
     if not passed:
         logger.debug(f"Job failed graduation timeline filter: {reason}")
-        return False, reason
+        return False, reason, "graduation"
 
     # Check season/year
     passed, reason = check_season_year(user.target_season_year, job.season_year)
     if not passed:
         logger.debug(f"Job failed season/year filter: {reason}")
-        return False, reason
+        return False, reason, "season_year"
 
     # Check work authorization
     passed, reason = check_work_authorization(
@@ -525,12 +526,12 @@ def passes_hard_filters(user: UserProfile, job: ExtractedJob) -> Tuple[bool, str
     )
     if not passed:
         logger.debug(f"Job failed work authorization filter: {reason}")
-        return False, reason
+        return False, reason, "work_auth"
 
-    return True, "Passed all hard filters"
+    return True, "Passed all hard filters", "none"
 
 
-def filter_job(job: ExtractedJob, config: Optional[Config] = None) -> Tuple[bool, str]:
+def filter_job(job: ExtractedJob, config: Optional[Config] = None) -> Tuple[bool, str, str]:
     """
     Convenience function to filter a job using global config.
 

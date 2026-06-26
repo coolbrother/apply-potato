@@ -19,6 +19,7 @@ Usage:
 
 import argparse
 import asyncio
+import json
 import logging
 import time
 from datetime import datetime
@@ -138,6 +139,21 @@ class JobScraper:
             locs = f"Remote / {locs}"
 
         return locs
+
+    def _log_filtered(self, company: str, title: str, category: str) -> None:
+        """Append a filtered-out event to data/filter_log.json for daily summary reporting."""
+        log_path = Path(__file__).parent / "data" / "filter_log.json"
+        try:
+            entries = json.loads(log_path.read_text(encoding="utf-8")) if log_path.exists() else []
+        except (json.JSONDecodeError, OSError):
+            entries = []
+        entries.append({
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "category": category,
+            "company": company or "",
+            "title": title or "",
+        })
+        log_path.write_text(json.dumps(entries, indent=2), encoding="utf-8")
 
     def _prepare_job_data(self, listing: JobListing, extracted: ExtractedJob,
                           fit_score: int, score_notes: list, final_url: str) -> dict:
@@ -265,10 +281,11 @@ class JobScraper:
             logger.debug(f"    class_standing={extracted.class_standing_requirement}, work_auth={extracted.work_authorization}")
 
             # Apply hard filters
-            passed, reason = passes_hard_filters(self.config.user, extracted)
+            passed, reason, category = passes_hard_filters(self.config.user, extracted)
             if not passed:
                 logger.warning(f"  Filtered out: {extracted.company} - {reason}")
                 self.stats["filtered_out"] += 1
+                self._log_filtered(extracted.company, extracted.title, category)
                 # Mark as filtered to skip on future runs
                 self.dedup_checker.mark_as_filtered(final_url)
                 continue

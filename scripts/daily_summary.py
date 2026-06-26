@@ -63,6 +63,12 @@ def _parse_dt(value) -> datetime | None:
     except (ValueError, TypeError):
         pass
 
+    # ISO format (used by filter_log.json)
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        pass
+
     for fmt in ("%m/%d/%Y %H:%M:%S", "%m/%d/%Y"):
         try:
             return datetime.strptime(text, fmt)
@@ -171,6 +177,22 @@ def main() -> None:
         except (json.JSONDecodeError, OSError):
             pass
 
+    # Count filtered-out jobs in window, grouped by category
+    filter_counts: dict[str, int] = {}
+    filter_log_path = Path(__file__).parent.parent / "data" / "filter_log.json"
+    if filter_log_path.exists():
+        try:
+            filter_entries = json.loads(filter_log_path.read_text(encoding="utf-8"))
+            for entry in filter_entries:
+                if in_window(_parse_dt(entry.get("timestamp"))):
+                    cat = entry.get("category", "other")
+                    filter_counts[cat] = filter_counts.get(cat, 0) + 1
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    total_filtered = sum(filter_counts.values())
+    scanned = discovered + total_filtered
+
     # %-d / %-I are not supported on Windows; build the label manually.
     def _fmt(dt: datetime) -> str:
         hour12 = dt.hour % 12 or 12
@@ -180,9 +202,26 @@ def main() -> None:
     range_label = f"{_fmt(start)} – {_fmt(end)}"
     divider = "─" * 35
 
+    category_labels = {
+        "job_type": "Job type",
+        "class_standing": "Class standing",
+        "graduation": "Graduation",
+        "season_year": "Season/year",
+        "work_auth": "Work auth",
+        "other": "Other",
+    }
+
+    filter_lines = "".join(
+        f"\n     ↳ {category_labels.get(cat, cat)}: {count}"
+        for cat, count in sorted(filter_counts.items())
+        if count > 0
+    )
+
     msg = (
         f"📊 **Pipeline Summary — {range_label}**\n"
         f"{divider}\n"
+        f"🔎 Scanned:                **{scanned}**\n"
+        f"🚫 Filtered out:           **{total_filtered}**{filter_lines}\n"
         f"🔍 Discovered:             **{discovered}**\n"
         f"⭐ Dream companies:         **{dream}**\n"
         f"📄 Docs ready (Phase 2):   **{docs_ready}**\n"
