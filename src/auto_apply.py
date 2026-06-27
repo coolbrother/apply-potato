@@ -255,6 +255,8 @@ class AutoApplyOrchestrator:
                 ["claude", "-p", prompt, "--allowedTools", ""],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 cwd=str(project_root),
                 timeout=60,
             )
@@ -478,6 +480,7 @@ class AutoApplyOrchestrator:
             capture_output=True,
             text=True,
             encoding="utf-8",
+            errors="replace",
             timeout=60,
         )
         if result.returncode != 0:
@@ -599,6 +602,7 @@ class AutoApplyOrchestrator:
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
+                errors="replace",
                 cwd=str(job_desc_output_dir),
                 timeout=600,
             )

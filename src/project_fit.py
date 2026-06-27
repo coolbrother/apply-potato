@@ -35,7 +35,7 @@ def run_project_fit_skill(
                 "--permission-mode", "bypassPermissions",
                 "--add-dir", str(resume_dir),
             ],
-            capture_output=True, text=True, encoding="utf-8",
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
             cwd=str(project_root), timeout=180,
         )
         for line in (result.stdout or "").splitlines():
