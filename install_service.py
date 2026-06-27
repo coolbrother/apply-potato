@@ -3,9 +3,15 @@
 install_service.py - Install ApplyPotato as background services
 
 Usage:
-    python install_service.py              # Install services
-    python install_service.py --uninstall  # Uninstall services
-    python install_service.py --status     # Show service status
+    python install_service.py                    # Install services
+    python install_service.py --uninstall        # Uninstall services
+    python install_service.py --status           # Show service status
+    python install_service.py --start [target]   # Start service(s)
+    python install_service.py --stop [target]    # Stop service(s)
+    python install_service.py --restart [target] # Restart service(s)
+
+    target is scrape, gmail, or all (default: all) for start/stop/restart.
+    Aliases: scraper/job/jobs -> scrape, email/mail -> gmail, both -> all.
 
 Windows: Uses WinSW (Windows Service Wrapper)
 macOS: Uses Launch Agents
@@ -66,6 +72,16 @@ SCHEDULED_TASKS = {
         "plist_id": "com.applypotato.daily_summary",
         "times": [{"hour": 9, "minute": 0}, {"hour": 17, "minute": 0}],
     }
+}
+
+# Past-tense labels for control action success messages
+_ACTION_PAST = {"start": "Started", "stop": "Stopped", "restart": "Restarted"}
+
+# Accepted target aliases -> canonical service selector (scrape, gmail, or all)
+_TARGET_ALIASES = {
+    "scrape": "scrape", "scraper": "scrape", "job": "scrape", "jobs": "scrape",
+    "gmail": "gmail", "email": "gmail", "mail": "gmail",
+    "all": "all", "both": "all",
 }
 
 
@@ -421,6 +437,38 @@ def get_windows_service_status(service_key: str) -> str:
 
     except Exception:
         return "Error"
+
+
+def control_windows_service(service_key: str, action: str) -> bool:
+    """Start/stop/restart an installed Windows service via its WinSW exe.
+
+    action is one of "start", "stop", "restart".
+    """
+    service = SERVICES[service_key]
+    service_exe = WINSW_DIR / f"{service['id']}.exe"
+
+    if not service_exe.exists():
+        print_error(f"{service['name']} is not installed (run install first)")
+        return False
+
+    try:
+        result = subprocess.run(
+            [str(service_exe), action],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        if result.returncode != 0:
+            print_error(f"Failed to {action} {service['name']}: {result.stderr or result.stdout}")
+            return False
+
+        print_success(f"{_ACTION_PAST[action]}: {service['name']}")
+        return True
+
+    except Exception as e:
+        print_error(f"Failed to {action} {service['id']}: {e}")
+        return False
 
 
 # =============================================================================
@@ -780,6 +828,41 @@ def get_macos_agent_status(service_key: str) -> str:
         return "Error"
 
 
+def control_macos_agent(service_key: str, action: str) -> bool:
+    """Start/stop/restart an installed macOS Launch Agent.
+
+    action is one of "start", "stop", "restart". For KeepAlive agents a plain
+    `launchctl stop` would just be relaunched, so "stop" means unload and
+    "start" means load; "restart" does both.
+    """
+    service = SERVICES[service_key]
+    plist_path = get_launch_agents_dir() / f"{service['plist_id']}.plist"
+
+    if not plist_path.exists():
+        print_error(f"{service['name']} is not installed (run install first)")
+        return False
+
+    try:
+        if action in ("stop", "restart"):
+            subprocess.run(["launchctl", "unload", str(plist_path)], capture_output=True)
+        if action in ("start", "restart"):
+            result = subprocess.run(
+                ["launchctl", "load", str(plist_path)],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0:
+                print_error(f"Failed to {action} {service['name']}: {result.stderr}")
+                return False
+
+        print_success(f"{_ACTION_PAST[action]}: {service['name']}")
+        return True
+
+    except Exception as e:
+        print_error(f"Failed to {action} {service['plist_id']}: {e}")
+        return False
+
+
 # =============================================================================
 # macOS Calendar Agents (one-shot, time-triggered)
 # =============================================================================
@@ -940,6 +1023,44 @@ def uninstall_macos_agents() -> bool:
 # Status and Main
 # =============================================================================
 
+def control_services(action: str, target: str) -> bool:
+    """Start/stop/restart one or all persistent services.
+
+    action is one of "start", "stop", "restart". target is "scrape", "gmail",
+    or "all". Only the persistent SERVICES are affected — scheduled tasks are
+    one-shot and not controlled here.
+    """
+    print_header(f"{action.capitalize()} Services")
+
+    keys = list(SERVICES) if target == "all" else [target]
+
+    if is_windows():
+        if not is_admin():
+            print_error("Administrator privileges required to control Windows services!")
+            print()
+            print("Run this in an elevated PowerShell or Command Prompt:")
+            selector = "" if target == "all" else f" {target}"
+            print(f"  python install_service.py --{action}{selector}")
+            return False
+
+        success = True
+        for key in keys:
+            if not control_windows_service(key, action):
+                success = False
+        return success
+
+    elif is_macos():
+        success = True
+        for key in keys:
+            if not control_macos_agent(key, action):
+                success = False
+        return success
+
+    else:
+        print_error(f"Unsupported operating system: {sys.platform}")
+        return False
+
+
 def print_service_status() -> None:
     """Print status of all services and scheduled tasks."""
     print_header("Service Status")
@@ -981,12 +1102,47 @@ def main() -> int:
         action="store_true",
         help="Show service status"
     )
+    parser.add_argument(
+        "--start",
+        action="store_true",
+        help="Start the service(s)"
+    )
+    parser.add_argument(
+        "--stop",
+        action="store_true",
+        help="Stop the service(s)"
+    )
+    parser.add_argument(
+        "--restart",
+        action="store_true",
+        help="Restart the service(s)"
+    )
+    parser.add_argument(
+        "service",
+        nargs="?",
+        choices=sorted(_TARGET_ALIASES),
+        default="all",
+        help="Which service to target for --start/--stop/--restart "
+             "(scrape/scraper/job/jobs, gmail/email/mail, all/both; default: all)"
+    )
     args = parser.parse_args()
+
+    # Normalize target aliases to their canonical selector
+    args.service = _TARGET_ALIASES[args.service]
 
     # Status check doesn't need prerequisites
     if args.status:
         print_service_status()
         return 0
+
+    # Start/stop/restart an already-installed service — no prerequisites needed
+    chosen = [name for name, on in
+              (("start", args.start), ("stop", args.stop), ("restart", args.restart)) if on]
+    if len(chosen) > 1:
+        print_error("Choose only one of --start / --stop / --restart")
+        return 1
+    if chosen:
+        return 0 if control_services(chosen[0], args.service) else 1
 
     # Check prerequisites for install/uninstall
     ok, error = check_prerequisites()
