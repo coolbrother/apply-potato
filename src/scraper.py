@@ -193,19 +193,27 @@ class PlaywrightScraper:
                         logger.debug(f"No 'Full Job Posting' tab on Simplify page: {e}")
 
                 elif is_greenhouse_embed:
-                    # Try to find and extract from Greenhouse iframe
+                    # Greenhouse embeds: the job description usually lives on the parent
+                    # page, while a greenhouse.io iframe holds the application form. Capture
+                    # both and combine so we never miss the description (the iframe alone is
+                    # often just name/education/resume fields with no title).
+                    parent_body = await self._page.inner_text("body")
+                    iframe_text = ""
                     try:
-                        # Wait for Greenhouse iframe to appear
                         iframe_selector = 'iframe[src*="boards.greenhouse.io"], iframe[src*="greenhouse.io"]'
                         await self._page.wait_for_selector(iframe_selector, timeout=5000)
-
                         iframe = self._page.frame_locator(iframe_selector).first
                         # Wait for job content to load in iframe
                         await asyncio.sleep(1)
-                        content = await iframe.locator("body").inner_text()
+                        iframe_text = await iframe.locator("body").inner_text()
                         logger.debug("Extracted content from Greenhouse iframe")
                     except Exception as e:
-                        logger.debug(f"No Greenhouse iframe found, using page body: {e}")
+                        logger.debug(f"No Greenhouse iframe found, using page body only: {e}")
+
+                    # Combine, preferring the longer source first (the description)
+                    parts = [parent_body, iframe_text]
+                    parts.sort(key=len, reverse=True)
+                    content = "\n\n".join(p for p in parts if p.strip())
 
                 # Fall back to page body content
                 if not content:

@@ -46,6 +46,34 @@ from src.project_fit import run_project_fit_skill
 logger = logging.getLogger(__name__)
 
 
+# Phrases that indicate a job posting is closed/removed (404 or expired listing).
+# Matched against scraped page text when the content is short (i.e. not a real JD).
+CLOSED_JOB_INDICATORS = (
+    "job you're looking for is now closed",
+    "job you are looking for is now closed",
+    "this job is no longer available",
+    "this position is no longer available",
+    "no longer accepting applications",
+    "position has been filled",
+    "posting is no longer active",
+    "job posting has expired",
+    "404",
+    "page not found",
+)
+
+
+def _is_closed_job(content: str) -> bool:
+    """Return True if the scraped page looks like a closed/removed job posting.
+
+    Only flags short pages (real job descriptions are long); a long page that merely
+    mentions "404" somewhere is not treated as closed.
+    """
+    if not content or len(content) > 2000:
+        return False
+    lowered = content.lower()
+    return any(phrase in lowered for phrase in CLOSED_JOB_INDICATORS)
+
+
 class JobScraper:
     """
     Main job scraping pipeline.
@@ -224,6 +252,11 @@ class JobScraper:
                     logger.warning(f"  Skipping: site blocked scraping (403)")
                     self.stats["scrape_failures"] += 1
                     return "Blocked (scrape failed)"
+                if _is_closed_job(content):
+                    logger.warning(f"  Skipping: job posting is closed/removed (404)")
+                    self.stats["scrape_failures"] += 1
+                    self.dedup_checker.mark_source_seen(listing.url)
+                    return "Closed: Job posting closed or removed (404)"
             except Exception as e:
                 logger.error(f"  Scrape error: {e}")
                 continue  # Retry
@@ -274,6 +307,7 @@ class JobScraper:
 
         # Process each extracted job (some postings have multiple positions)
         added_any = False
+        filter_reason = None
         for extracted in extracted_jobs:
             # Log extracted data for debugging
             logger.debug(f"  Extracted job: company={extracted.company}, title={extracted.title}")
@@ -286,6 +320,7 @@ class JobScraper:
                 logger.warning(f"  Filtered out: {extracted.company} - {reason}")
                 self.stats["filtered_out"] += 1
                 self._log_filtered(extracted.company, extracted.title, category)
+                filter_reason = reason
                 # Mark as filtered to skip on future runs
                 self.dedup_checker.mark_as_filtered(final_url)
                 continue
@@ -394,7 +429,11 @@ class JobScraper:
         # Mark source URL as seen so we skip it on future runs
         self.dedup_checker.mark_source_seen(listing.url)
 
-        return added_any
+        if added_any:
+            return True
+        if filter_reason:
+            return f"Filtered: {filter_reason}"
+        return False
 
     def _build_sources(self, only: Optional[List[str]] = None) -> List[tuple]:
         """
@@ -508,10 +547,14 @@ class JobScraper:
                             self.job_list_parser.mark_row(listing.url, "Already Processed")
                         elif result is True:
                             self.job_list_parser.mark_row(listing.url, "Done")
+                        elif isinstance(result, str) and result.startswith("Filtered: "):
+                            self.job_list_parser.mark_row(listing.url, "Filtered out", notes=result[len("Filtered: "):])
+                        elif isinstance(result, str) and result.startswith("Closed: "):
+                            self.job_list_parser.mark_row(listing.url, "Closed", notes=result[len("Closed: "):])
                         elif result is False:
                             self.job_list_parser.mark_row(listing.url, "Filtered out")
-                        else:  # reason string (blocked, extraction error, etc.)
-                            self.job_list_parser.mark_row(listing.url, result)
+                        else:  # failure string (blocked, extraction error, etc.)
+                            self.job_list_parser.mark_row(listing.url, "Failed", notes=result)
 
                     # Small delay between requests
                     await asyncio.sleep(1)

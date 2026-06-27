@@ -33,6 +33,7 @@ class SheetsJobListParser:
         self._url_to_row: Dict[str, int] = {}
         self._job_list_col: int = 0
         self._result_col: int = 1
+        self._notes_col: Optional[int] = None
 
     def _get_service(self):
         return self._sheets_client._get_service()
@@ -83,6 +84,11 @@ class SheetsJobListParser:
             logger.error("Job list sheet missing 'Result' header column")
             return []
 
+        try:
+            self._notes_col = header.index("notes")
+        except ValueError:
+            self._notes_col = None  # Notes column is optional
+
         listings: List[JobListing] = []
         self._url_to_row = {}
 
@@ -114,8 +120,8 @@ class SheetsJobListParser:
         logger.info(f"Job list sheet: found {len(listings)} unprocessed URL(s)")
         return listings
 
-    def mark_row(self, url: str, status: str) -> None:
-        """Write a result string to the Result column for the given URL's row."""
+    def mark_row(self, url: str, status: str, notes: Optional[str] = None) -> None:
+        """Write status (and optional notes) back to the sheet for the given URL's row."""
         row_num = self._url_to_row.get(url)
         if row_num is None:
             logger.warning(f"mark_row: URL not found in job list index: {url}")
@@ -123,17 +129,26 @@ class SheetsJobListParser:
 
         sheet_id = self.config.job_list_sheet_id
         tab = self.config.job_list_sheet_tab
-        col_letter = self._col_letter(self._result_col)
-        cell = f"'{tab}'!{col_letter}{row_num}"
+        service = self._get_service()
 
         try:
-            service = self._get_service()
+            result_col_letter = self._col_letter(self._result_col)
             service.spreadsheets().values().update(
                 spreadsheetId=sheet_id,
-                range=cell,
+                range=f"'{tab}'!{result_col_letter}{row_num}",
                 valueInputOption="RAW",
                 body={"values": [[status]]},
             ).execute()
-            logger.info(f"  Job list sheet: row {row_num} marked '{status}'")
+
+            if notes and self._notes_col is not None:
+                notes_col_letter = self._col_letter(self._notes_col)
+                service.spreadsheets().values().update(
+                    spreadsheetId=sheet_id,
+                    range=f"'{tab}'!{notes_col_letter}{row_num}",
+                    valueInputOption="RAW",
+                    body={"values": [[notes]]},
+                ).execute()
+
+            logger.info(f"  Job list sheet: row {row_num} marked '{status}'" + (f" — {notes}" if notes else ""))
         except Exception as e:
             logger.warning(f"  Failed to write result to job list sheet row {row_num}: {e}")

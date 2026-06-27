@@ -46,6 +46,7 @@ CLASS_STANDING_LEVELS = {
 # Patterns to extract class standing from job requirements
 RISING_PATTERN = re.compile(r"rising\s+(\w+)", re.IGNORECASE)
 ENTERING_PATTERN = re.compile(r"entering\s+(\w+)(?:\s+year)?", re.IGNORECASE)
+APPROACHING_PATTERN = re.compile(r"approaching\s+(?:their\s+|the\s+)?(?:final|last)\s+year", re.IGNORECASE)
 PENULTIMATE_PATTERN = re.compile(r"penultimate\s+year", re.IGNORECASE)
 FINAL_YEAR_PATTERN = re.compile(r"final\s+year", re.IGNORECASE)
 # "Matriculated/enrolled in undergraduate/bachelor's/college degree" = any undergrad student (level 1)
@@ -113,6 +114,10 @@ def _parse_class_standing(text: str) -> Optional[int]:
         if target in CLASS_STANDING_LEVELS:
             # Entering X means you're currently one level below X
             return max(1, CLASS_STANDING_LEVELS[target] - 1)
+
+    # Check for "approaching their final year" — currently one year before final (Junior)
+    if APPROACHING_PATTERN.search(text_lower):
+        return 3
 
     # Check for "penultimate year" (second-to-last year)
     if PENULTIMATE_PATTERN.search(text_lower):
