@@ -521,7 +521,7 @@ def install_windows_scheduled_task(task_key: str) -> bool:
     script_path = PROJECT_ROOT / task["script"]
 
     config = get_config()
-    username = os.environ.get("USERNAME", "sz")
+    username = os.environ.get("USERNAME", "")
     password = config.windows_service_password
 
     if not password:

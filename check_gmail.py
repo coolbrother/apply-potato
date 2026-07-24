@@ -4,6 +4,9 @@ Gmail status tracking for ApplyPotato.
 
 Monitors Gmail for job application status updates and updates Google Sheets.
 
+Reads from every account listed in GMAIL_ACCOUNTS (or the single authorized
+account when that setting is blank).
+
 Workflow:
 1. Fetch recent emails from Gmail (with privacy filters)
 2. Classify emails with AI (confirmation, OA, interview, offer, rejection)
@@ -13,6 +16,7 @@ Workflow:
 Usage:
     python check_gmail.py              # Run once
     python check_gmail.py --scheduled  # Run on schedule (every N minutes)
+    python check_gmail.py --auth       # One-time OAuth for each configured account
 """
 
 import argparse
@@ -25,7 +29,7 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 
 from src.config import get_config, Config
 from src.logging_config import setup_logging
-from src.gmail import GmailClient, get_gmail_client, EmailMessage
+from src.gmail import GmailClient, get_gmail_clients, EmailMessage
 from src.email_filters import apply_privacy_filters
 from src.email_classifier import EmailClassifier, get_classifier, EmailClassification
 from src.sheets import SheetsClient, get_sheets_client, JobRow, normalize_date
@@ -71,12 +75,13 @@ class GmailChecker:
         """
         self.config = config or get_config()
         self.reprocess = reprocess
-        self.gmail_client = get_gmail_client()
+        self.gmail_clients = get_gmail_clients()
         self.classifier = get_classifier(self.config)
         self.sheets_client = get_sheets_client()
 
         # Stats
         self.stats = {
+            "accounts_checked": 0,
             "emails_fetched": 0,
             "filtered_out": 0,
             "classified": 0,
@@ -221,11 +226,12 @@ class GmailChecker:
             logger.error(f"Failed to update job: {e}")
             return False
 
-    def _process_email(self, email: EmailMessage) -> bool:
+    def _process_email(self, client: GmailClient, email: EmailMessage) -> bool:
         """
         Process a single email.
 
         Args:
+            client: The Gmail client (account) this email came from
             email: Email message to process
 
         Returns:
@@ -233,7 +239,7 @@ class GmailChecker:
         """
         # Log email details for verification
         date_str = email.date.strftime("%Y-%m-%d %H:%M")
-        logger.info(f"Processing: {email.sender_email} | {date_str} | [{email.category}] {email.subject}")
+        logger.info(f"Processing [{client.label}]: {email.sender_email} | {date_str} | [{email.category}] {email.subject}")
 
         # Apply privacy filters (Layer 2 & 3)
         passed, reason = apply_privacy_filters(email)
@@ -241,14 +247,14 @@ class GmailChecker:
             logger.debug(f"Email filtered: {reason}")
             self.stats["filtered_out"] += 1
             # Still mark as processed to avoid re-checking
-            self.gmail_client.mark_as_processed(email.message_id)
+            client.mark_as_processed(email.message_id)
             return False
 
         # Classify with AI
         classification = self.classifier.classify(email)
         if classification is None:
             logger.warning("Classification failed")
-            self.gmail_client.mark_as_processed(email.message_id)
+            client.mark_as_processed(email.message_id)
             return False
 
         self.stats["classified"] += 1
@@ -258,14 +264,14 @@ class GmailChecker:
         if classification.category == "unknown":
             logger.debug("Unknown category, skipping")
             self.stats["unknown_category"] += 1
-            self.gmail_client.mark_as_processed(email.message_id)
+            client.mark_as_processed(email.message_id)
             return False
 
         # Find matching job
         job = self._find_matching_job(classification)
         if job is None:
             self.stats["no_match"] += 1
-            self.gmail_client.mark_as_processed(email.message_id)
+            client.mark_as_processed(email.message_id)
             return False
 
         self.stats["matched"] += 1
@@ -277,7 +283,7 @@ class GmailChecker:
             self.stats["updated"] += 1
 
         # Mark as processed
-        self.gmail_client.mark_as_processed(email.message_id)
+        client.mark_as_processed(email.message_id)
 
         return updated
 
@@ -296,43 +302,53 @@ class GmailChecker:
         # Reset stats
         self.stats = {k: 0 for k in self.stats}
 
-        # Fetch recent emails
-        logger.info(f"Fetching emails from last {self.config.gmail_lookback_days} day(s)...")
+        # Fetch recent emails from every configured account
+        accounts = ", ".join(c.label for c in self.gmail_clients)
+        logger.info(f"Fetching emails from last {self.config.gmail_lookback_days} day(s) for: {accounts}")
         if self.reprocess:
-            logger.info("Reprocess mode: ignoring processed_emails.json")
-        try:
-            emails = self.gmail_client.fetch_recent_emails(skip_processed=not self.reprocess)
-            self.stats["emails_fetched"] = len(emails)
-            logger.info(f"Found {len(emails)} new emails to process")
+            logger.info("Reprocess mode: ignoring processed email caches")
+
+        fetched = []  # (client, email) pairs
+        for client in self.gmail_clients:
+            try:
+                emails = client.fetch_recent_emails(skip_processed=not self.reprocess)
+            except Exception as e:
+                # One broken account (expired token, wrong auth) must not stop the others
+                logger.error(f"Failed to fetch emails for {client.label}: {e}")
+                continue
+
+            self.stats["accounts_checked"] += 1
+            fetched.extend((client, email) for email in emails)
+            logger.info(f"[{client.label}] Found {len(emails)} new emails to process")
 
             # Log summary of all fetched emails
             if emails:
                 logger.info("-" * 60)
-                logger.info("Emails found:")
+                logger.info(f"Emails found ({client.label}):")
                 for i, email in enumerate(emails, 1):
                     date_str = email.date.strftime("%Y-%m-%d %H:%M")
                     subject_preview = email.subject[:50] + "..." if len(email.subject) > 50 else email.subject
                     logger.info(f"  {i}. [{email.category}] {email.sender_email}")
                     logger.info(f"     {date_str} | {subject_preview}")
                 logger.info("-" * 60)
-        except Exception as e:
-            logger.error(f"Failed to fetch emails: {e}")
-            emails = []
+
+        self.stats["emails_fetched"] = len(fetched)
 
         # Process each email
-        for email in emails:
+        for client, email in fetched:
             try:
-                self._process_email(email)
+                self._process_email(client, email)
             except Exception as e:
                 logger.error(f"Error processing email '{email.subject[:40]}...': {e}")
                 # Still mark as processed to avoid infinite retries
-                self.gmail_client.mark_as_processed(email.message_id)
+                client.mark_as_processed(email.message_id)
 
         # Log summary
         elapsed = time.time() - start_time
         logger.info("=" * 60)
         logger.info("Gmail check complete!")
         logger.info(f"  Time elapsed: {elapsed:.1f}s")
+        logger.info(f"  Accounts checked: {self.stats['accounts_checked']}/{len(self.gmail_clients)}")
         logger.info(f"  Emails fetched: {self.stats['emails_fetched']}")
         logger.info(f"  Filtered out: {self.stats['filtered_out']}")
         logger.info(f"  Classified: {self.stats['classified']}")
@@ -354,6 +370,41 @@ def run_once(reprocess: bool = False):
     stats = checker.run()
 
     return stats
+
+
+def authorize_accounts() -> int:
+    """
+    Interactively authorize every configured Gmail account.
+
+    Background services run headless and cannot open a consent screen, so each
+    account needs its OAuth token created once from a terminal.
+    """
+    config = get_config()
+    setup_logging("gmail", config, console=True)
+
+    clients = get_gmail_clients()
+    failures = 0
+
+    for client in clients:
+        print()
+        print("=" * 60)
+        print(f"Authorizing: {client.label}")
+        print(f"Token file:  {client.token_path}")
+        if client.token_path.exists():
+            print("Existing token found - reusing it (delete the file to re-authorize).")
+        else:
+            print("A browser window will open. Sign in with THIS account.")
+        print("=" * 60)
+
+        try:
+            print(f"  OK - authorized as {client.authorized_email()}")
+        except Exception as e:
+            print(f"  FAILED - {e}")
+            failures += 1
+
+    print()
+    print(f"Authorized {len(clients) - failures}/{len(clients)} account(s)")
+    return 1 if failures else 0
 
 
 def run_scheduled():
@@ -389,7 +440,11 @@ def main():
     parser = argparse.ArgumentParser(description="ApplyPotato Gmail Status Checker")
     parser.add_argument("--scheduled", action="store_true", help="Run on schedule")
     parser.add_argument("--reprocess", action="store_true", help="Reprocess all emails (ignore processed_emails.json)")
+    parser.add_argument("--auth", action="store_true", help="Authorize each configured Gmail account (one-time, interactive)")
     args = parser.parse_args()
+
+    if args.auth:
+        raise SystemExit(authorize_accounts())
 
     if args.scheduled:
         run_scheduled()

@@ -216,6 +216,36 @@ GMAIL_CHECK_INTERVAL_MINUTES=10 # How often to check email
 JOB_AGE_LIMIT_DAYS=7            # Ignore jobs older than this
 ```
 
+### Multiple Gmail Accounts
+
+By default the app reads from a single Gmail account (the one authorized by
+`auth/gmail_token.json`). To monitor several inboxes — e.g. a personal and a
+school account — list them in `.env`:
+
+```bash
+GMAIL_ACCOUNTS=you@gmail.com,you@school.edu
+```
+
+Both the status checker (`check_gmail.py`) and the newsletter scraper read from
+every account and merge the results. Each account keeps its own token
+(`auth/gmail_token_<account>.json`) and its own processed-email caches, so
+nothing is double-counted.
+
+Each account needs a one-time browser sign-in. Because the background services
+run headless, authorize them from a terminal first:
+
+```bash
+python check_gmail.py --auth
+```
+
+This opens a consent screen per account — **sign in with the matching account
+each time**. The app verifies the authorized address and refuses to run if a
+token was granted for the wrong mailbox. The first account listed inherits the
+existing single-account token and processed history automatically, so it does
+not re-authenticate or re-scan old mail.
+
+Leaving `GMAIL_ACCOUNTS` blank keeps the original single-account behavior.
+
 ## Discord Notifications
 
 Get instant alerts when jobs from your dream companies are found.
@@ -320,6 +350,8 @@ playwright install chromium
 
 1. Make sure `auth/credentials.json` exists
 2. Delete `auth/gmail_token.json` and `auth/sheets_token.json` to re-authenticate
+   (with multiple accounts, delete the specific `auth/gmail_token_<account>.json`
+   and re-run `python check_gmail.py --auth`)
 3. Check that your OAuth consent screen is configured
 
 ### Jobs not being found

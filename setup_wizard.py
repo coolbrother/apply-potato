@@ -250,12 +250,14 @@ def test_oauth_gmail() -> bool:
     """Test Gmail OAuth flow."""
     print_info("Testing Gmail OAuth...")
     try:
-        from src.gmail import GmailClient
+        from src.gmail import get_gmail_clients
         from src.config import load_config
 
         config = load_config()
-        client = GmailClient(config)
-        # Just creating the client triggers OAuth if needed
+        # One client per configured account; each triggers OAuth if needed
+        for client in get_gmail_clients(config):
+            print_info(f"  Authorizing {client.label}...")
+            client.authorized_email()
         print_success("Gmail OAuth successful")
         return True
     except Exception as e:

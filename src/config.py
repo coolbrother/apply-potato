@@ -99,6 +99,9 @@ class Config:
     gmail_check_interval_minutes: int
     gmail_lookback_days: int
 
+    # Gmail Accounts (empty = single account using the legacy token file)
+    gmail_accounts: List[str]
+
     # User Profile
     user: UserProfile
 
@@ -442,6 +445,7 @@ def load_config(env_path: Optional[Path] = None) -> Config:
         scrape_interval_minutes=_get_int("SCRAPE_INTERVAL_MINUTES", 30),
         gmail_check_interval_minutes=_get_int("GMAIL_CHECK_INTERVAL_MINUTES", 10),
         gmail_lookback_days=_get_int("GMAIL_LOOKBACK_DAYS", 1),
+        gmail_accounts=_parse_list(_get_optional("GMAIL_ACCOUNTS", "")),
         user=user,
         status_colors=_parse_status_colors(),
         discord=discord_config,

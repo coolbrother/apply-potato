@@ -4,12 +4,12 @@ Extracts job listing URLs from newsletter HTML using link extraction (no AI).
 """
 
 import logging
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from bs4 import BeautifulSoup
 
 from .config import Config, get_config, NewsletterSource
-from .gmail import GmailClient, EmailMessage, get_gmail_client
+from .gmail import GmailClient, EmailMessage, get_gmail_clients
 from .github_parser import JobListing
 
 
@@ -41,9 +41,25 @@ class NewsletterParser:
     the existing pipeline.
     """
 
-    def __init__(self, config: Optional[Config] = None, gmail_client: Optional[GmailClient] = None):
+    def __init__(
+        self,
+        config: Optional[Config] = None,
+        gmail_client: Optional[GmailClient] = None,
+        gmail_clients: Optional[List[GmailClient]] = None,
+    ):
+        """
+        Args:
+            config: Optional config object.
+            gmail_client: Single client override (kept for callers/tests passing one client).
+            gmail_clients: Explicit list of clients. Defaults to every configured account.
+        """
         self.config = config or get_config()
-        self.gmail = gmail_client or get_gmail_client()
+        if gmail_clients:
+            self.gmail_clients = gmail_clients
+        elif gmail_client:
+            self.gmail_clients = [gmail_client]
+        else:
+            self.gmail_clients = get_gmail_clients()
 
     def _is_job_url(self, url: str) -> bool:
         """Check if a URL looks like a job posting."""
@@ -144,14 +160,30 @@ class NewsletterParser:
         logger.info(f"Extracted {len(listings)} jobs from newsletter: {email.subject}")
         return listings
 
-    def fetch_newsletter_emails(self, source: NewsletterSource) -> List[EmailMessage]:
-        """Fetch newsletter emails for a specific source."""
+    def fetch_newsletter_emails(self, source: NewsletterSource) -> List[Tuple[GmailClient, EmailMessage]]:
+        """
+        Fetch newsletter emails for a specific source across every configured account.
+
+        Returns (client, email) pairs so each email is marked processed on the
+        account it came from.
+        """
         hours = self.config.newsletter_lookback_days * 24
-        return self.gmail.fetch_emails_by_senders(
-            senders=source.sender_emails,
-            hours=hours,
-            skip_processed=True,
-        )
+        results = []
+
+        for client in self.gmail_clients:
+            try:
+                emails = client.fetch_emails_by_senders(
+                    senders=source.sender_emails,
+                    hours=hours,
+                    skip_processed=True,
+                )
+            except Exception as e:
+                # One broken account must not stop the others
+                logger.error(f"Failed to fetch newsletters for {client.label}: {e}")
+                continue
+            results.extend((client, email) for email in emails)
+
+        return results
 
     def fetch_all_jobs(self) -> List[JobListing]:
         """
@@ -169,11 +201,11 @@ class NewsletterParser:
             logger.info("")
             logger.info(f"Fetching newsletters from: {source.name} ({source.sender_emails})")
 
-            emails = self.fetch_newsletter_emails(source)
-            logger.info(f"Found {len(emails)} unprocessed newsletters from {source.name}")
+            fetched = self.fetch_newsletter_emails(source)
+            logger.info(f"Found {len(fetched)} unprocessed newsletters from {source.name}")
 
-            for email in emails:
-                logger.info(f"Processing newsletter: {email.subject} ({email.date})")
+            for client, email in fetched:
+                logger.info(f"Processing newsletter [{client.label}]: {email.subject} ({email.date})")
 
                 listings = self.extract_jobs_from_email(email, source.name)
 
@@ -182,7 +214,7 @@ class NewsletterParser:
                         seen_urls.add(listing.url)
                         all_listings.append(listing)
 
-                self.gmail.mark_newsletter_as_processed(email.message_id)
+                client.mark_newsletter_as_processed(email.message_id)
 
         logger.info(f"Total newsletter jobs extracted: {len(all_listings)}")
         return all_listings

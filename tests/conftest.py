@@ -131,6 +131,7 @@ def test_config(test_user_profile: UserProfile, test_google_sheet_id: str) -> Co
         scrape_interval_minutes=30,
         gmail_check_interval_minutes=10,
         gmail_lookback_days=1,
+        gmail_accounts=[],
         user=test_user_profile,
         status_colors={
             "Applied": "#E3F2FD",
@@ -331,13 +332,15 @@ def mock_email_fixtures() -> List[EmailMessage]:
 def mock_gmail_client(mock_email_fixtures: List[EmailMessage]):
     """Mock GmailClient to return fixture emails."""
     mock_client = MagicMock()
+    mock_client.label = "default"
     mock_client.fetch_recent_emails.return_value = mock_email_fixtures
     mock_client.is_processed.return_value = False
     mock_client.mark_as_processed.return_value = None
 
-    with patch("src.gmail.get_gmail_client", return_value=mock_client):
-        with patch("src.gmail.GmailClient", return_value=mock_client):
-            yield mock_client
+    with patch("src.gmail.get_gmail_client", return_value=mock_client), \
+         patch("src.gmail.get_gmail_clients", return_value=[mock_client]), \
+         patch("src.gmail.GmailClient", return_value=mock_client):
+        yield mock_client
 
 
 # =============================================================================
@@ -428,6 +431,7 @@ def test_config_mock_sheets(test_user_profile: UserProfile) -> Config:
         scrape_interval_minutes=30,
         gmail_check_interval_minutes=10,
         gmail_lookback_days=1,
+        gmail_accounts=[],
         user=test_user_profile,
         status_colors={
             "Applied": "#E3F2FD",
