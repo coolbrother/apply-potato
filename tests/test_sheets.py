@@ -465,6 +465,7 @@ class TestAppendedRowColor:
         """A real SheetsClient with the Google service mocked out."""
         config = SimpleNamespace(
             google_sheet_id="sheet-123",
+            jobs_sheet_tab="Jobs",
             status_colors={"New": "#FFFFFF", "OA": "#B3E5FC"},
         )
         client = SheetsClient(config=config)
@@ -528,3 +529,85 @@ class TestAppendedRowColor:
 
         assert client.add_job({"company": "Uber", "position": "SWE Intern"}) == -1
         assert self._color_requests(client) == []
+
+
+# =============================================================================
+# Jobs tab name + gid resolution
+# =============================================================================
+
+def _client(tab: str = "Jobs") -> SheetsClient:
+    """A SheetsClient whose service returns one spreadsheet with `tab` at gid 42."""
+    config = SimpleNamespace(
+        google_sheet_id="sheet-123", jobs_sheet_tab=tab, status_colors={},
+    )
+    client = SheetsClient(config=config)
+
+    service = MagicMock()
+    service.spreadsheets().get().execute.return_value = {
+        "sheets": [
+            {"properties": {"title": "Other", "sheetId": 7}},
+            {"properties": {"title": tab, "sheetId": 42}},
+        ]
+    }
+    client._service = service
+    return client
+
+
+class TestJobsTabName:
+    """The tab was hardcoded as "Jobs" in 13 places; it now comes from
+    JOBS_SHEET_TAB."""
+
+    def test_range_uses_configured_tab(self):
+        assert _client("Applications")._range("A:U") == "'Applications'!A:U"
+
+    def test_tab_is_quoted(self):
+        """A name with a space is invalid A1 notation unquoted."""
+        assert _client("Job Board")._range("A2:U") == "'Job Board'!A2:U"
+
+    def test_apostrophe_in_tab_name(self):
+        """Sheets escapes a literal ' by doubling it."""
+        assert _client("Sam's Jobs")._range("A1") == "'Sam''s Jobs'!A1"
+
+    def test_gid_lookup_matches_on_title(self):
+        assert _client("Applications")._get_jobs_sheet_id() == 42
+
+    def test_gid_falls_back_when_tab_missing(self):
+        client = _client("Jobs")
+        client._service.spreadsheets().get().execute.return_value = {"sheets": []}
+        assert client._get_jobs_sheet_id() == 0
+
+    def test_appended_row_number_survives_a_quoted_tab(self):
+        """The row number is parsed out of updatedRange, which comes back quoted for
+        a tab name like this — and split from the right, since the name has a "!"."""
+        client = _client("Jobs!Live")
+        client._service.spreadsheets().values().append().execute.return_value = {
+            "updates": {"updatedRange": "'Jobs!Live'!A306:U306"}
+        }
+        assert client.add_job({"company": "Uber"}) == 306
+
+
+class TestJobsSheetIdCache:
+    """The gid costs an API call and cannot change under a live client."""
+
+    def _lookup_count(self, client) -> int:
+        return client._service.spreadsheets().get().execute.call_count
+
+    def test_resolved_once_across_calls(self):
+        client = _client()
+        before = self._lookup_count(client)
+
+        for _ in range(5):
+            client._get_jobs_sheet_id()
+
+        assert self._lookup_count(client) - before == 1
+
+    def test_creating_the_tab_invalidates_it(self):
+        """A tab created this run has a gid we never saw; a stale 0 would format the
+        wrong tab."""
+        client = _client()
+        client._jobs_sheet_id = 42
+        client._service.spreadsheets().get().execute.return_value = {"sheets": []}
+
+        client._ensure_jobs_sheet_exists()
+
+        assert client._jobs_sheet_id is None

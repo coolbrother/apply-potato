@@ -137,6 +137,9 @@ class Config:
     job_list_sheet_id: Optional[str]   # Sheet ID for the Job List / Result sheet
     job_list_sheet_tab: str            # Tab name within that sheet
 
+    # Google Sheets job database (the tab ApplyPotato writes jobs to)
+    jobs_sheet_tab: str
+
     # Paths
     base_dir: Path = field(default_factory=lambda: Path(__file__).parent.parent)
 
@@ -469,6 +472,7 @@ def load_config(env_path: Optional[Path] = None) -> Config:
         windows_service_password=_get_optional("WINDOWS_SERVICE_PASSWORD") or None,
         job_list_sheet_id=_get_optional("JOB_LIST_SHEET_ID") or None,
         job_list_sheet_tab=_get_optional("JOB_LIST_SHEET_TAB", "Sheet1"),
+        jobs_sheet_tab=_get_optional("JOBS_SHEET_TAB", "Jobs"),
         base_dir=base_dir,
     )
 
