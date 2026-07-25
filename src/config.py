@@ -137,6 +137,9 @@ class Config:
     job_list_sheet_id: Optional[str]   # Sheet ID for the Job List / Result sheet
     job_list_sheet_tab: str            # Tab name within that sheet
 
+    # Google Sheets job database (the tab ApplyPotato writes jobs to)
+    jobs_sheet_tab: str
+
     # Paths
     base_dir: Path = field(default_factory=lambda: Path(__file__).parent.parent)
 
@@ -266,12 +269,18 @@ def _parse_status_colors() -> Dict[str, str]:
         e.g., {"Applied": "#E3F2FD", "OA": "#B3E5FC"}
     """
     # Status names must match the values used in sheets.py
-    status_names = ["Applied", "OA", "Phone", "Technical", "Offer", "Rejected"]
+    status_names = ["New", "Applied", "OA", "Phone", "Technical", "Offer", "Rejected"]
+
+    # A new row inherits the formatting of the row above it when appended, so "New"
+    # needs a color of its own — without one, the status color of whatever row came
+    # before bleeds down into every job added after it.
+    fallbacks = {"New": "#FFFFFF"}
+
     colors = {}
 
     for status in status_names:
         env_key = f"STATUS_COLOR_{status.upper()}"
-        color = os.getenv(env_key, "").strip()
+        color = os.getenv(env_key, "").strip() or fallbacks.get(status, "")
 
         # Validate hex color format
         if color:
@@ -463,6 +472,7 @@ def load_config(env_path: Optional[Path] = None) -> Config:
         windows_service_password=_get_optional("WINDOWS_SERVICE_PASSWORD") or None,
         job_list_sheet_id=_get_optional("JOB_LIST_SHEET_ID") or None,
         job_list_sheet_tab=_get_optional("JOB_LIST_SHEET_TAB", "Sheet1"),
+        jobs_sheet_tab=_get_optional("JOBS_SHEET_TAB", "Jobs"),
         base_dir=base_dir,
     )
 

@@ -32,7 +32,7 @@ from src.logging_config import setup_logging
 from src.gmail import GmailClient, get_gmail_clients, EmailMessage
 from src.email_filters import apply_privacy_filters
 from src.email_classifier import EmailClassifier, get_classifier, EmailClassification
-from src.sheets import SheetsClient, get_sheets_client, JobRow, normalize_date
+from src.sheets import SheetsClient, get_sheets_client, JobRow, normalize_date, parse_sheet_datetime
 from src.notifications import is_dream_company, notify_status_change
 
 
@@ -49,7 +49,9 @@ CATEGORY_TO_STATUS = {
     "rejection": "Rejected",
 }
 
-# Mapping of email categories to date columns
+# Mapping of email categories to date columns. "confirmation" is handled separately
+# in _update_job_status: application_date is single-valued and comes from the email's
+# arrival time, while the rest are scheduled events that may accumulate.
 CATEGORY_TO_DATE_COLUMN = {
     "confirmation": "application_date",
     "oa": "oa_date",
@@ -145,6 +147,62 @@ class GmailChecker:
         logger.info(f"No matching job found for companies: {classification.company_candidates}")
         return None
 
+    @staticmethod
+    def _local_naive(dt: Optional[datetime]) -> datetime:
+        """
+        Coerce an email timestamp to a local, timezone-naive datetime.
+
+        parsedate_to_datetime() returns a tz-aware datetime carrying the *sender's*
+        UTC offset. The Sheet stores local wall-clock times and daily_summary.py
+        windows against local naive bounds, so a foreign offset would silently shift
+        the recorded hour.
+        """
+        if dt is None:
+            return datetime.now()
+        if dt.tzinfo is not None:
+            dt = dt.astimezone().replace(tzinfo=None)
+        return dt
+
+    def _application_date_value(self, job: JobRow, email: EmailMessage) -> Optional[str]:
+        """
+        Build the timestamp for application_date, or None to leave the cell alone.
+
+        Single-valued and write-once: the first confirmation is the real application
+        date, so a later confirmation neither overwrites nor appends. Carries a time
+        because column F is DATE_TIME and daily_summary.py windows Applied counts
+        within the day.
+        """
+        if str(job.application_date or "").strip():
+            logger.debug(
+                f"application_date already set on row {job.row_number}, leaving as-is"
+            )
+            return None
+        return self._local_naive(email.date).strftime("%m/%d/%Y %H:%M:%S")
+
+    def _event_date_value(
+        self,
+        classification: EmailClassification,
+        email: EmailMessage
+    ) -> str:
+        """
+        Build the date to record for an oa / phone / technical email. Date-only.
+
+        For these categories date_mentioned IS the scheduled event date, so prefer it.
+        Falls back to the email's arrival date rather than datetime.now() so the value
+        is a function of the email — re-running over the same message re-derives the
+        same date instead of appending today's. Date-only because columns G/H/I carry
+        a DATE, not DATE_TIME, number format.
+        """
+        mentioned = classification.date_mentioned
+        if mentioned:
+            candidate = normalize_date(str(mentioned))
+            if parse_sheet_datetime(candidate):
+                return candidate
+            logger.warning(
+                f"Unparseable date_mentioned {mentioned!r}; falling back to email date"
+            )
+        return self._local_naive(email.date).strftime("%m/%d/%Y")
+
     def _update_job_status(
         self,
         job: JobRow,
@@ -178,20 +236,21 @@ class GmailChecker:
         # Update status
         updates["status"] = new_status
 
-        # Update relevant date column
-        date_column = CATEGORY_TO_DATE_COLUMN.get(category)
-        if date_column:
-            date_str = datetime.now().strftime("%m/%d/%Y %H:%M:%S")
-            if classification.date_mentioned:
-                # Try to use the date from the email
-                try:
-                    date_str = normalize_date(classification.date_mentioned)
-                except Exception:
-                    pass
-
-            # Add date (handles multiple dates)
-            self.sheets_client.add_date_to_column(job.row_number, date_column, date_str)
-            # Don't include in updates dict since add_date_to_column handles it
+        # Update relevant date column. The two paths differ: application_date is
+        # single-valued and must come from the confirmation's arrival time — never from
+        # date_mentioned, which the AI fills with any date in the body (often an OA or
+        # offer deadline). OA/phone/tech dates are scheduled events that may
+        # legitimately accumulate across rounds, so they keep the appending helper.
+        if category == "confirmation":
+            stamp = self._application_date_value(job, email)
+            if stamp:
+                updates["application_date"] = stamp
+        elif category in CATEGORY_TO_DATE_COLUMN:
+            self.sheets_client.add_date_to_column(
+                job.row_number,
+                CATEGORY_TO_DATE_COLUMN[category],
+                self._event_date_value(classification, email),
+            )
 
         # For offer/rejection, add details to notes
         if category in ("offer", "rejection"):

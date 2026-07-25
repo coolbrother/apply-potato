@@ -30,6 +30,40 @@ class DegreeRequirement:
 
 
 @dataclass
+class ClassStandingRange:
+    """
+    Normalized class standing bounds interpreted by the AI.
+
+    The verbatim posting text stays in ExtractedJob.class_standing_requirement;
+    this is the structured reading of it. Either bound may be None (unbounded).
+    """
+    minimum: Optional[str] = None  # Freshman | Sophomore | Junior | Senior | Graduate | PhD
+    maximum: Optional[str] = None
+
+
+@dataclass
+class GraduationWindow:
+    """
+    Normalized graduation date range interpreted by the AI, as "YYYY-MM".
+
+    Either bound may be None (unbounded on that side).
+    """
+    earliest: Optional[str] = None
+    latest: Optional[str] = None
+
+
+@dataclass
+class SeasonYearParsed:
+    """
+    Normalized season/year interpreted by the AI.
+
+    An academic-year span covers multiple years, so years is a list.
+    """
+    season: Optional[str] = None  # Summer | Fall | Spring | Winter
+    years: List[int] = field(default_factory=list)
+
+
+@dataclass
 class ExtractedJob:
     """Structured job data extracted from a job posting page."""
     # Required fields
@@ -49,9 +83,15 @@ class ExtractedJob:
     currency: Optional[str] = None
 
     # Eligibility requirements
+    # Each verbatim field below is paired with a structured field holding the AI's
+    # normalized reading of it. filters.py prefers the structured one and falls back
+    # to parsing the text when it is absent.
     class_standing_requirement: Optional[str] = None  # Freshman | Sophomore | Junior | Senior | Graduate
+    class_standing_range: Optional[ClassStandingRange] = None
     graduation_timeline: Optional[str] = None
+    graduation_window: Optional[GraduationWindow] = None
     season_year: Optional[str] = None  # Summer 2025, Fall 2025, etc.
+    season_year_parsed: Optional[SeasonYearParsed] = None
     work_authorization: Optional[str] = None
     sponsorship_available: Optional[bool] = None
     gpa_requirement: Optional[float] = None
@@ -423,6 +463,37 @@ class AIExtractor:
                     type=deg_data.get("type")
                 )
 
+        # Parse normalized eligibility fields. Each is optional: when the AI omits one,
+        # filters.py falls back to parsing the matching verbatim field.
+        standing_range = None
+        standing_data = data.get("class_standing_range")
+        if isinstance(standing_data, dict):
+            minimum = standing_data.get("minimum")
+            maximum = standing_data.get("maximum")
+            if minimum or maximum:
+                standing_range = ClassStandingRange(minimum=minimum, maximum=maximum)
+
+        grad_window = None
+        window_data = data.get("graduation_window")
+        if isinstance(window_data, dict):
+            earliest = window_data.get("earliest")
+            latest = window_data.get("latest")
+            if earliest or latest:
+                grad_window = GraduationWindow(earliest=earliest, latest=latest)
+
+        season_parsed = None
+        season_data = data.get("season_year_parsed")
+        if isinstance(season_data, dict):
+            years = []
+            for raw_year in season_data.get("years") or []:
+                try:
+                    years.append(int(raw_year))
+                except (TypeError, ValueError):
+                    logger.debug(f"Ignoring non-numeric year in season_year_parsed: {raw_year!r}")
+            season = season_data.get("season")
+            if season or years:
+                season_parsed = SeasonYearParsed(season=season, years=years)
+
         # Determine apply_url: use AI-extracted URL, fallback to source_url
         apply_url = data.get("apply_url")
         if not apply_url and source_url:
@@ -443,8 +514,11 @@ class AIExtractor:
                 salary_period=data.get("salary_period"),
                 currency=data.get("currency"),
                 class_standing_requirement=data.get("class_standing_requirement"),
+                class_standing_range=standing_range,
                 graduation_timeline=data.get("graduation_timeline"),
+                graduation_window=grad_window,
                 season_year=data.get("season_year"),
+                season_year_parsed=season_parsed,
                 work_authorization=data.get("work_authorization"),
                 sponsorship_available=data.get("sponsorship_available"),
                 gpa_requirement=self._parse_number(data.get("gpa_requirement")),

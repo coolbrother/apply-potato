@@ -7,14 +7,30 @@ Usage:
 
 import pytest
 
+from src.config import UserProfile
+from src.ai_extractor import (
+    ClassStandingRange,
+    ExtractedJob,
+    GraduationWindow,
+    SeasonYearParsed,
+)
 from src.filters import (
     check_class_standing,
     check_graduation_timeline,
     check_season_year,
     check_work_authorization,
     check_job_type,
+    passes_hard_filters,
+    _extract_years,
     _parse_class_standing,
     _parse_graduation_date,
+)
+
+# The posting whose "...last requirement for you to graduate" was misread as the
+# Graduate class standing, rejecting an eligible Junior.
+GRADUATE_VERB_REQUIREMENT = (
+    "At the end of the internship, you must return to school to continue your education "
+    "or the internship must be the last requirement for you to graduate."
 )
 
 
@@ -48,6 +64,17 @@ class TestParseClassStanding:
         ("matriculated in an undergraduate program in good standing", 1),
         ("Are enrolled in a Bachelor's degree or above", 1),
         ("Must be enrolled in a college degree program", 1),
+        # "graduate" the NOUN is the Graduate standing...
+        ("Graduate students only", 5),
+        ("Must be enrolled in a graduate program", 5),
+        # ...but "graduate" the VERB says nothing about year level
+        (GRADUATE_VERB_REQUIREMENT, None),
+        ("You must be on track to graduate", None),
+        ("Interns are hired before they graduate", None),
+        # Known limitation of the text fallback: other standing keywords still fire in
+        # unrelated prose. The structured class_standing_range is the real fix; tightening
+        # this further would risk false negatives. Asserted to document current behavior.
+        ("Report directly to a senior engineer", 4),
         # Edge cases
         ("", None),
         ("Unknown", None),
@@ -80,6 +107,12 @@ class TestCheckClassStanding:
         ("Freshman", "Enrolled in undergraduate program", True),
         ("Junior", "Pursuing undergraduate degree", True),
         ("Senior", "Matriculated in undergraduate", True),
+        # "graduate" as a verb must not impose a Graduate-level floor
+        ("Junior", GRADUATE_VERB_REQUIREMENT, True),
+        ("Freshman", GRADUATE_VERB_REQUIREMENT, True),
+        # ...while the noun sense still does
+        ("Junior", "Graduate students only", False),
+        ("Masters", "Graduate students only", True),
         # No requirement = pass
         ("Freshman", None, True),
         ("Freshman", "", True),
@@ -148,8 +181,17 @@ class TestCheckSeasonYear:
     @pytest.mark.parametrize("user_target,job_season_year,should_pass", [
         ("Summer 2025", "Summer 2025", True),
         ("Summer 2025", "summer 2025", True),
+        # Text fallback stays year-only: it cannot reliably identify a season in prose.
+        # The structured path DOES enforce the season - see TestSeasonYearStructured.
         ("Summer 2025", "Fall 2025", True),
         ("Summer 2025", "Summer 2026", False),
+        # Academic-year spans name every year they cover, not just the first
+        ("Summer 2027", "2026/2027", True),
+        ("Summer 2027", "2026-2027", True),
+        ("Summer 2027", "2026/27", True),
+        ("Summer 2027", "Summer 2026/2027", True),
+        ("Summer 2027", "2025/2026", False),
+        ("Summer 2026", "2026/2027", True),
         # No preference = pass
         (None, "Summer 2025", True),
         ("", "Fall 2026", True),
@@ -216,3 +258,218 @@ class TestCheckJobType:
     def test_check_job_type(self, user_target, job_type, should_pass):
         result, reason = check_job_type(user_target, job_type)
         assert result == should_pass, f"Expected {should_pass}, got {result}. Reason: {reason}"
+
+
+class TestExtractYears:
+    """Test year extraction, including academic-year spans."""
+
+    @pytest.mark.parametrize("text,expected", [
+        ("Summer 2026", {"2026"}),
+        ("2026/2027", {"2026", "2027"}),
+        ("2026-2027", {"2026", "2027"}),
+        # Two-digit shorthand expands against the leading century
+        ("2026/27", {"2026", "2027"}),
+        ("Summer Internship", set()),
+        ("", set()),
+        (None, set()),
+    ])
+    def test_extract_years(self, text, expected):
+        assert _extract_years(text) == expected
+
+
+class TestClassStandingStructured:
+    """Test the AI-normalized class standing range, including the upper bound."""
+
+    @pytest.mark.parametrize("user_standing,minimum,maximum,should_pass", [
+        # Upper bound: "freshmen and sophomores only" excludes juniors
+        ("Freshman", "Freshman", "Sophomore", True),
+        ("Sophomore", "Freshman", "Sophomore", True),
+        ("Junior", "Freshman", "Sophomore", False),
+        ("Senior", "Freshman", "Sophomore", False),
+        # Closed list "Junior or Senior"
+        ("Sophomore", "Junior", "Senior", False),
+        ("Junior", "Junior", "Senior", True),
+        ("Senior", "Junior", "Senior", True),
+        ("Masters", "Junior", "Senior", False),
+        # Open-ended "Junior or above" sets no ceiling
+        ("Sophomore", "Junior", None, False),
+        ("Junior", "Junior", None, True),
+        ("PhD", "Junior", None, True),
+        # Enrollment-only postings: any student qualifies
+        ("Freshman", "Freshman", None, True),
+        ("Junior", "Freshman", None, True),
+        # Graduate-only
+        ("Senior", "Graduate", "PhD", False),
+        ("Masters", "Graduate", "PhD", True),
+        # Both bounds absent = no constraint
+        ("Freshman", None, None, True),
+    ])
+    def test_standing_range(self, user_standing, minimum, maximum, should_pass):
+        standing_range = ClassStandingRange(minimum=minimum, maximum=maximum)
+        result, reason = check_class_standing(user_standing, None, standing_range)
+        assert result == should_pass, f"Expected {should_pass}, got {result}. Reason: {reason}"
+
+    def test_structured_wins_over_text(self):
+        """The structured range is authoritative when both are present."""
+        standing_range = ClassStandingRange(minimum="Freshman", maximum=None)
+        # Text alone would parse "graduate" and reject a Junior; the range must win
+        result, _ = check_class_standing("Junior", GRADUATE_VERB_REQUIREMENT, standing_range)
+        assert result is True
+
+    def test_unrecognized_value_fails_open(self):
+        """An out-of-vocabulary standing from the AI must not reject the job."""
+        standing_range = ClassStandingRange(minimum="Postdoc", maximum=None)
+        result, _ = check_class_standing("Junior", None, standing_range)
+        assert result is True
+
+    def test_graduated_user_passes(self):
+        """A user with no class standing is unaffected by a range."""
+        standing_range = ClassStandingRange(minimum="Freshman", maximum="Sophomore")
+        result, _ = check_class_standing(None, None, standing_range)
+        assert result is True
+
+
+class TestGraduationWindowStructured:
+    """Test the AI-normalized graduation window."""
+
+    @pytest.mark.parametrize("user_grad,earliest,latest,should_pass", [
+        # Floor only ("December 2027 or later", "not graduating before May 2026")
+        ("May 2028", "2026-05", None, True),
+        ("May 2026", "2026-05", None, True),          # bound is inclusive
+        ("December 2025", "2026-05", None, False),
+        # Deadline only ("Must graduate by June 2026")
+        ("May 2026", None, "2026-06", True),
+        ("June 2026", None, "2026-06", True),         # bound is inclusive
+        ("December 2026", None, "2026-06", False),
+        # Range ("between Dec 2025 and June 2026")
+        ("May 2026", "2025-12", "2026-06", True),
+        ("May 2025", "2025-12", "2026-06", False),
+        ("December 2027", "2025-12", "2026-06", False),
+        # Unbounded
+        ("May 2026", None, None, True),
+    ])
+    def test_graduation_window(self, user_grad, earliest, latest, should_pass):
+        window = GraduationWindow(earliest=earliest, latest=latest)
+        result, reason = check_graduation_timeline(user_grad, None, window)
+        assert result == should_pass, f"Expected {should_pass}, got {result}. Reason: {reason}"
+
+    def test_malformed_bound_fails_open(self):
+        """An unparseable bound must not reject the job."""
+        window = GraduationWindow(earliest="not-a-date", latest=None)
+        result, _ = check_graduation_timeline("May 2026", None, window)
+        assert result is True
+
+    def test_no_user_date_passes(self):
+        result, _ = check_graduation_timeline(None, None, GraduationWindow(earliest="2030-05"))
+        assert result is True
+
+
+class TestSeasonYearStructured:
+    """Test the AI-normalized season/year, which enforces the season."""
+
+    @pytest.mark.parametrize("user_target,season,years,should_pass", [
+        ("Summer 2027", "Summer", [2027], True),
+        ("Summer 2027", "Summer", [2026, 2027], True),
+        # The reported case: an academic-year span covering the target year
+        ("Summer 2027", None, [2026, 2027], True),
+        ("Summer 2027", None, [2025, 2026], False),
+        # Season is now enforced (the text fallback still allows this)
+        ("Summer 2027", "Fall", [2027], False),
+        ("Summer 2025", "Fall", [2025], False),
+        ("Fall 2025", "Fall", [2025], True),
+        # A posting naming no season cannot mismatch one
+        ("Summer 2027", None, [2027], True),
+        # A posting naming no year falls back to the season alone
+        ("Summer 2027", "Summer", [], True),
+        ("Summer 2027", "Fall", [], False),
+        # "autumn" normalizes to "fall"
+        ("Fall 2026", "Autumn", [2026], True),
+    ])
+    def test_season_year_parsed(self, user_target, season, years, should_pass):
+        parsed = SeasonYearParsed(season=season, years=years)
+        result, reason = check_season_year(user_target, None, parsed)
+        assert result == should_pass, f"Expected {should_pass}, got {result}. Reason: {reason}"
+
+    def test_no_user_preference_passes(self):
+        parsed = SeasonYearParsed(season="Fall", years=[2030])
+        result, _ = check_season_year(None, None, parsed)
+        assert result is True
+
+
+class TestPassesHardFiltersStructured:
+    """End-to-end filtering with and without the structured fields."""
+
+    def _user(self):
+        """A fresh profile per test - the shared fixture is session-scoped."""
+        return UserProfile(
+            name="Test User",
+            email="test@example.com",
+            class_standing="Junior",
+            graduation_date="May 2028",
+            majors=["Computer Science"],
+            minors=[],
+            gpa=3.5,
+            work_authorization="US Citizen",
+            target_job_type="Internship",
+            target_season_year="Summer 2027",
+            preferred_locations=[],
+            work_model="Any",
+            min_salary_hourly=0.0,
+            target_companies=[],
+            skills=[],
+            job_categories=["Software Engineering"],
+            degree_level="Bachelors",
+        )
+
+    def test_reported_posting_now_passes(self):
+        """Both reported bugs, exercised through the real entry point."""
+        job = ExtractedJob(
+            company="Example Co",
+            title="Software Engineer Intern",
+            job_type="Internship",
+            class_standing_requirement=GRADUATE_VERB_REQUIREMENT,
+            season_year="2026/2027",
+        )
+        passed, reason, category = passes_hard_filters(self._user(), job)
+        assert passed is True, f"Rejected by {category}: {reason}"
+
+    def test_legacy_job_without_structured_fields_still_filters(self):
+        """An ExtractedJob predating the new fields still uses the text path."""
+        job = ExtractedJob(
+            company="Example Co",
+            title="Software Engineer Intern",
+            job_type="Internship",
+            class_standing_requirement="Must be a Senior",
+            season_year="Summer 2027",
+        )
+        passed, reason, category = passes_hard_filters(self._user(), job)
+        assert passed is False
+        assert category == "class_standing"
+
+    def test_structured_ceiling_rejects(self):
+        """The new upper bound rejects a Junior from a sophomores-only posting."""
+        job = ExtractedJob(
+            company="Example Co",
+            title="Software Engineer Intern",
+            job_type="Internship",
+            class_standing_requirement="Freshmen and sophomores only",
+            class_standing_range=ClassStandingRange(minimum="Freshman", maximum="Sophomore"),
+            season_year="Summer 2027",
+        )
+        passed, reason, category = passes_hard_filters(self._user(), job)
+        assert passed is False
+        assert category == "class_standing"
+        assert "above maximum" in reason
+
+    def test_structured_season_rejects(self):
+        """Season enforcement rejects a Fall posting for a Summer target."""
+        job = ExtractedJob(
+            company="Example Co",
+            title="Software Engineer Intern",
+            job_type="Internship",
+            season_year="Fall 2027",
+            season_year_parsed=SeasonYearParsed(season="Fall", years=[2027]),
+        )
+        passed, reason, category = passes_hard_filters(self._user(), job)
+        assert passed is False
+        assert category == "season_year"

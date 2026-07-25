@@ -41,48 +41,22 @@ from src.config import get_config
 from src.logging_config import setup_logging, get_logger
 from src.sheets import (
     get_sheets_client,
+    parse_sheet_datetime, 
+    split_date_cell,
     STATUS_APPLIED, STATUS_GHOSTED, STATUS_NEW, STATUS_OA, STATUS_OFFER,
     STATUS_PHONE, STATUS_REJECTED, STATUS_TECHNICAL,
 )
 
 
 def _parse_dt(value) -> datetime | None:
-    """Parse a Sheets/JSON cell value to a datetime.
+    """Parse a Sheets/JSON cell value to a datetime, or None if unparseable.
 
-    Handles Google Sheets serial numbers (read via valueRenderOption=FORMULA, which
-    carry a fractional part for the time), "M/D/YYYY H:MM:SS" and "M/D/YYYY" strings,
-    and semicolon-separated multi-date cells (the most recent / last segment is used).
-    Returns None if unparseable.
+    A multi-date cell (e.g. "6/13/2026; 6/14/2026 10:00:00") resolves to its last
+    segment — for a summary, the most recent round is the one that matters. Parsing
+    a single value lives in src.sheets.parse_sheet_datetime.
     """
-    if value is None:
-        return None
-    text = str(value).strip()
-    if not text:
-        return None
-
-    # Semicolon-separated cells (e.g. "6/13/2026; 6/14/2026 10:00:00") -> use last
-    if ";" in text:
-        text = text.split(";")[-1].strip()
-
-    # Google Sheets serial number (days since 1899-12-30), with fractional time
-    try:
-        serial = float(text)
-        return datetime(1899, 12, 30) + timedelta(days=serial)
-    except (ValueError, TypeError):
-        pass
-
-    # ISO format (used by filter_log.json)
-    try:
-        return datetime.fromisoformat(text)
-    except ValueError:
-        pass
-
-    for fmt in ("%m/%d/%Y %H:%M:%S", "%m/%d/%Y"):
-        try:
-            return datetime.strptime(text, fmt)
-        except ValueError:
-            continue
-    return None
+    segments = split_date_cell(value)
+    return parse_sheet_datetime(segments[-1]) if segments else None
 
 
 def _sanitize(s: str) -> str:

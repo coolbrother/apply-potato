@@ -4,7 +4,7 @@ Handles all CRUD operations for the Jobs tab.
 """
 
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from dataclasses import dataclass
@@ -71,6 +71,97 @@ def normalize_date(date_str: str) -> str:
 
     # Return as-is if no format matched
     return date_str
+
+
+# Google Sheets serial-date epoch: serial 0 is 1899-12-30.
+SHEETS_EPOCH = datetime(1899, 12, 30)
+
+# Formats a date cell can arrive in. %m and %d accept both "07" and "7", so each
+# entry covers the zero-padded form Python writes and the unpadded form Sheets displays.
+_CELL_DATE_FORMATS = ("%m/%d/%Y %H:%M:%S", "%m/%d/%Y %H:%M", "%m/%d/%Y")
+
+
+def parse_sheet_datetime(value: Any) -> Optional[datetime]:
+    """
+    Parse a single date cell value into a datetime.
+
+    Handles every shape a date column can come back as:
+    - Sheets serial numbers (what valueRenderOption=FORMULA returns; the fractional
+      part carries the time of day)
+    - ISO 8601 strings (used by the JSON state files)
+    - "M/D/YYYY H:MM:SS" / "M/D/YYYY", zero-padded or not
+
+    Returns None if the value is blank or unparseable. Pass one value, not a
+    semicolon-joined cell — use split_date_cell() for that.
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+    # Sheets serial number (days since 1899-12-30). "inf" raises OverflowError.
+    try:
+        return SHEETS_EPOCH + timedelta(days=float(text))
+    except (ValueError, TypeError, OverflowError):
+        pass
+
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        pass
+
+    for fmt in _CELL_DATE_FORMATS:
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+
+    return None
+
+
+def split_date_cell(value: Any) -> List[str]:
+    """Split a possibly semicolon-joined date cell into trimmed, non-empty segments."""
+    if value is None:
+        return []
+    return [segment.strip() for segment in str(value).split(";") if segment.strip()]
+
+
+def date_already_recorded(existing: Any, date_str: str) -> bool:
+    """
+    Check whether date_str's calendar date is already present in a date cell.
+
+    Compares parsed dates rather than raw text. The cell is read back as
+    FORMATTED_VALUE, so an existing real datetime arrives unpadded and with a time
+    ("7/23/2026 20:28:52") while the incoming value is zero-padded and may be
+    date-only ("07/23/2026"). A raw string compare never matches those, which is
+    what caused the same date to be appended to a cell over and over.
+
+    Args:
+        existing: Current cell value (formatted text, a serial number, or a
+            semicolon-joined mix of both).
+        date_str: The value about to be written.
+
+    Returns:
+        True if the same calendar date is already in the cell.
+    """
+    new_dt = parse_sheet_datetime(date_str)
+    target = str(date_str).strip()
+
+    for segment in split_date_cell(existing):
+        # Exact match first, so unparseable-but-identical text still dedupes.
+        if segment == target:
+            return True
+        if new_dt is None:
+            continue
+        existing_dt = parse_sheet_datetime(segment)
+        if existing_dt and existing_dt.date() == new_dt.date():
+            return True
+
+    return False
 
 
 # Google Sheets API scopes
@@ -213,6 +304,17 @@ class SheetsClient:
         self.config = config or get_config()
         self._service = None
         self._creds = None
+        # Resolved lazily; the tab's numeric id can't change under a live client.
+        self._jobs_sheet_id: Optional[int] = None
+
+    @property
+    def _tab(self) -> str:
+        """The Jobs tab name, always quoted so A1 notation is safe for any name."""
+        return "'" + self.config.jobs_sheet_tab.replace("'", "''") + "'"
+
+    def _range(self, a1: str) -> str:
+        """Build an A1 range against the Jobs tab: "A2:U" -> "'Jobs'!A2:U"."""
+        return f"{self._tab}!{a1}"
 
     def _get_credentials(self) -> Credentials:
         """Get or refresh Google API credentials."""
@@ -273,9 +375,10 @@ class SheetsClient:
         return func()
 
     def _ensure_jobs_sheet_exists(self) -> None:
-        """Create or rename a sheet to 'Jobs' if it doesn't exist."""
+        """Create or rename a sheet to the configured Jobs tab if it doesn't exist."""
         service = self._get_service()
         sheet_id = self.config.google_sheet_id
+        tab = self.config.jobs_sheet_tab
 
         # Get existing sheets with their IDs
         def get_sheets():
@@ -288,10 +391,10 @@ class SheetsClient:
         sheets = self._retry_with_backoff(get_sheets)
         sheet_titles = [s["properties"]["title"] for s in sheets]
 
-        if "Jobs" in sheet_titles:
+        if tab in sheet_titles:
             return  # Already exists
 
-        # Try to rename Sheet1 to Jobs if it exists
+        # Try to rename Sheet1 to the Jobs tab if it exists
         for sheet in sheets:
             if sheet["properties"]["title"] == "Sheet1":
                 def rename_sheet():
@@ -302,7 +405,7 @@ class SheetsClient:
                                 "updateSheetProperties": {
                                     "properties": {
                                         "sheetId": sheet["properties"]["sheetId"],
-                                        "title": "Jobs"
+                                        "title": tab
                                     },
                                     "fields": "title"
                                 }
@@ -311,42 +414,32 @@ class SheetsClient:
                     ).execute()
 
                 self._retry_with_backoff(rename_sheet)
-                print("Renamed 'Sheet1' to 'Jobs'")
+                self._jobs_sheet_id = None  # Title moved; any resolved id is stale
+                print(f"Renamed 'Sheet1' to '{tab}'")
                 return
 
-        # No Sheet1 found, create new Jobs sheet
+        # No Sheet1 found, create a new Jobs tab
         def create_sheet():
             service.spreadsheets().batchUpdate(
                 spreadsheetId=sheet_id,
                 body={
                     "requests": [{
                         "addSheet": {
-                            "properties": {"title": "Jobs"}
+                            "properties": {"title": tab}
                         }
                     }]
                 }
             ).execute()
 
         self._retry_with_backoff(create_sheet)
-        print("Created 'Jobs' sheet")
+        self._jobs_sheet_id = None  # A brand-new tab has an id we haven't seen
+        print(f"Created '{tab}' sheet")
 
     def _ensure_date_formatting(self) -> None:
         """Apply MM/DD/YYYY date format to date columns."""
         service = self._get_service()
         sheet_id = self.config.google_sheet_id
-
-        # First, get the sheet's internal ID (sheetId, not spreadsheetId)
-        def get_sheet_id():
-            result = service.spreadsheets().get(
-                spreadsheetId=sheet_id,
-                fields="sheets.properties"
-            ).execute()
-            for sheet in result.get("sheets", []):
-                if sheet["properties"]["title"] == "Jobs":
-                    return sheet["properties"]["sheetId"]
-            return 0  # Fallback to first sheet
-
-        jobs_sheet_id = self._retry_with_backoff(get_sheet_id)
+        jobs_sheet_id = self._get_jobs_sheet_id()
 
         # Date-only columns (0-indexed):
         # D=3 (job_posting_date), G=6 (oa_date), H=7 (phone_date),
@@ -441,7 +534,7 @@ class SheetsClient:
         def check_headers():
             result = service.spreadsheets().values().get(
                 spreadsheetId=sheet_id,
-                range="Jobs!A1:U1"
+                range=self._range("A1:U1")
             ).execute()
             return result.get("values", [[]])[0]
 
@@ -457,7 +550,7 @@ class SheetsClient:
             def set_headers():
                 service.spreadsheets().values().update(
                     spreadsheetId=sheet_id,
-                    range="Jobs!A1:U1",
+                    range=self._range("A1:U1"),
                     valueInputOption="RAW",
                     body={"values": [HEADERS]}
                 ).execute()
@@ -480,7 +573,7 @@ class SheetsClient:
         def fetch():
             result = service.spreadsheets().values().get(
                 spreadsheetId=sheet_id,
-                range="Jobs!A2:U",  # Skip header row
+                range=self._range("A2:U"),  # Skip header row
                 valueRenderOption="FORMULA"  # Get formulas to parse hyperlinks
             ).execute()
             return result.get("values", [])
@@ -537,7 +630,7 @@ class SheetsClient:
         def append():
             result = service.spreadsheets().values().append(
                 spreadsheetId=sheet_id,
-                range="Jobs!A:U",
+                range=self._range("A:U"),
                 valueInputOption="USER_ENTERED",  # Parse formulas
                 insertDataOption="INSERT_ROWS",
                 body={"values": [row]}
@@ -548,11 +641,22 @@ class SheetsClient:
 
         # Parse the updated range to get row number
         updated_range = result.get("updates", {}).get("updatedRange", "")
-        # Format: Jobs!A123:R123
+        # Format: Jobs!A123:U123. Split from the right — a quoted tab name may
+        # itself contain "!" — then drop the column letters off the first cell.
         try:
-            row_num = int(updated_range.split("!")[1].split(":")[0][1:])
+            first_cell = updated_range.rsplit("!", 1)[-1].split(":")[0]
+            row_num = int(first_cell.lstrip("ABCDEFGHIJKLMNOPQRSTUVWXYZ"))
         except (IndexError, ValueError):
             row_num = -1
+
+        # INSERT_ROWS inherits the row above's formatting, so a job appended under a
+        # status-colored row comes out colored too. The row is written either way —
+        # a formatting failure must not read as a failed append.
+        if row_num > 0:
+            try:
+                self.apply_status_color(row_num, row[COLUMNS["status"]])
+            except Exception as e:
+                print(f"Warning: could not set row {row_num} color: {e}")
 
         return row_num
 
@@ -573,7 +677,7 @@ class SheetsClient:
             if key in COLUMNS:
                 col_idx = COLUMNS[key]
                 col_letter = chr(ord("A") + col_idx)
-                range_str = f"Jobs!{col_letter}{row_number}"
+                range_str = self._range(f"{col_letter}{row_number}")
                 data.append({
                     "range": range_str,
                     "values": [[str(value) if value is not None else ""]]
@@ -677,7 +781,7 @@ class SheetsClient:
 
         # First get existing notes
         col_letter = chr(ord("A") + COLUMNS["notes"])
-        range_str = f"Jobs!{col_letter}{row_number}"
+        range_str = self._range(f"{col_letter}{row_number}")
 
         def get_notes():
             result = service.spreadsheets().values().get(
@@ -703,6 +807,10 @@ class SheetsClient:
         """
         Add a date to a date column (semicolon-separated if multiple).
 
+        For event columns that can legitimately hold several dates — a rescheduled
+        assessment, a second interview round. NOT for application_date, which is
+        single-valued; write that one through update_job.
+
         Args:
             row_number: 1-indexed row number.
             column: Column name (oa_date, phone_date, tech_date).
@@ -715,7 +823,7 @@ class SheetsClient:
             return
 
         col_letter = chr(ord("A") + COLUMNS[column])
-        range_str = f"Jobs!{col_letter}{row_number}"
+        range_str = self._range(f"{col_letter}{row_number}")
 
         def get_existing():
             result = service.spreadsheets().values().get(
@@ -727,11 +835,12 @@ class SheetsClient:
 
         existing = self._retry_with_backoff(get_existing)
 
-        # Check if date already exists (prevent duplicates)
+        # Skip if this calendar date is already recorded. Compares parsed dates, not
+        # raw text: the read above returns FORMATTED_VALUE, so an existing datetime
+        # comes back unpadded while date_str is zero-padded.
         if existing:
-            existing_dates = [d.strip() for d in existing.split(";")]
-            if date_str in existing_dates:
-                return  # Date already exists, skip
+            if date_already_recorded(existing, date_str):
+                return
             combined = f"{existing}; {date_str}"
         else:
             combined = date_str
@@ -739,9 +848,19 @@ class SheetsClient:
         self.update_job(row_number, {column: combined})
 
     def _get_jobs_sheet_id(self) -> int:
-        """Get the internal sheet ID for the Jobs tab."""
+        """
+        Get the internal sheet ID (gid) for the Jobs tab.
+
+        batchUpdate addresses cells by gid rather than by tab name, so every color
+        or format write needs this number. It costs an API call to look up and
+        can't change while the client is alive, so it's resolved once and kept.
+        """
+        if self._jobs_sheet_id is not None:
+            return self._jobs_sheet_id
+
         service = self._get_service()
         sheet_id = self.config.google_sheet_id
+        tab = self.config.jobs_sheet_tab
 
         def get_sheet_id():
             result = service.spreadsheets().get(
@@ -749,11 +868,12 @@ class SheetsClient:
                 fields="sheets.properties"
             ).execute()
             for sheet in result.get("sheets", []):
-                if sheet["properties"]["title"] == "Jobs":
+                if sheet["properties"]["title"] == tab:
                     return sheet["properties"]["sheetId"]
             return 0  # Fallback to first sheet
 
-        return self._retry_with_backoff(get_sheet_id)
+        self._jobs_sheet_id = self._retry_with_backoff(get_sheet_id)
+        return self._jobs_sheet_id
 
     def _hex_to_rgb(self, hex_color: str) -> dict:
         """
@@ -817,7 +937,7 @@ class SheetsClient:
 
         Args:
             row_number: 1-indexed row number.
-            status: Status value (Applied, OA, Phone, Technical, Offer, Rejected)
+            status: Status value (New, Applied, OA, Phone, Technical, Offer, Rejected)
         """
         color = self.config.status_colors.get(status)
         if color:

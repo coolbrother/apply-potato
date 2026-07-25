@@ -9,7 +9,12 @@ from datetime import datetime
 from typing import Optional, Tuple
 
 from .config import Config, UserProfile, get_config
-from .ai_extractor import ExtractedJob
+from .ai_extractor import (
+    ClassStandingRange,
+    ExtractedJob,
+    GraduationWindow,
+    SeasonYearParsed,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -56,6 +61,37 @@ UNDERGRADUATE_PATTERN = re.compile(
 )
 # "Current student" = any currently enrolled student (level 1)
 CURRENT_STUDENT_PATTERN = re.compile(r"current\s+student|currently\s+(enrolled|a\s+student)", re.IGNORECASE)
+
+# "graduate" is a class standing only in the NOUN sense ("graduate student"). As a verb
+# ("...the last requirement for you to graduate") it describes finishing a degree and says
+# nothing about year level, so it must not be read as level 5. A bare "Graduate" on its own
+# is a standing value, hence the second alternative.
+GRADUATE_NOUN_PATTERN = re.compile(
+    r"\b(?:graduate|grad)\s+(?:student|program|degree|school|studies|level|candidate|standing)s?\b"
+    r"|^\s*graduate\s*$",
+    re.IGNORECASE,
+)
+
+# Standings whose bare keyword is ambiguous in prose and needs its own pattern above.
+AMBIGUOUS_STANDINGS = {"graduate"}
+
+# Word-boundary matcher per standing keyword. Plain substring matching lets a keyword fire
+# inside an unrelated word or phrase; re.escape() escapes spaces on this interpreter, so
+# multi-word keys are rebuilt with \s+ to tolerate irregular spacing.
+CLASS_STANDING_PATTERNS = [
+    (
+        re.compile(r"\b" + re.escape(standing).replace("\\ ", r"\s+") + r"\b", re.IGNORECASE),
+        level,
+    )
+    for standing, level in CLASS_STANDING_LEVELS.items()
+    if standing not in AMBIGUOUS_STANDINGS
+]
+
+# Academic-year shorthand: "2026/27" covers both 2026 and 2027.
+ACADEMIC_YEAR_PATTERN = re.compile(r"\b(\d{4})\s*[/-]\s*(\d{2})\b")
+
+# Seasons as written in postings; "autumn" normalizes to "fall".
+SEASON_PATTERN = re.compile(r"\b(spring|summer|fall|autumn|winter)\b", re.IGNORECASE)
 
 # Work authorization levels (higher = more restrictive requirement the user can meet)
 WORK_AUTH_LEVELS = {
@@ -129,11 +165,85 @@ def _parse_class_standing(text: str) -> Optional[int]:
         return 4  # Senior
 
     # Collect all direct matches and return the minimum (OR semantics — satisfying any one is enough)
-    matched_levels = [level for standing, level in CLASS_STANDING_LEVELS.items() if standing in text_lower]
+    matched_levels = [level for pattern, level in CLASS_STANDING_PATTERNS if pattern.search(text_lower)]
+
+    # "graduate" only counts in the noun sense, so it is matched separately
+    if GRADUATE_NOUN_PATTERN.search(text_lower):
+        matched_levels.append(CLASS_STANDING_LEVELS["graduate"])
+
     if matched_levels:
         return min(matched_levels)
 
     return None
+
+
+def _standing_to_level(standing: Optional[str]) -> Optional[int]:
+    """
+    Map a normalized standing name from the AI to its numeric level.
+
+    This is a controlled vocabulary (Freshman..PhD), so it is a plain lookup with no
+    prose parsing. An unrecognized value returns None, which the caller treats as
+    "no bound" — consistent with the module's fail-open design.
+    """
+    if not standing:
+        return None
+
+    level = CLASS_STANDING_LEVELS.get(standing.strip().lower())
+    if level is None:
+        logger.warning(f"Unrecognized normalized class standing from AI: {standing!r}")
+    return level
+
+
+def _parse_year_month(text: Optional[str]) -> Optional[datetime]:
+    """
+    Parse a "YYYY-MM" bound from the AI's graduation_window.
+
+    Falls back to the free-text parser so an unexpected format ("May 2026") still works.
+    Uses day 15 to match _parse_graduation_date, so bound comparisons are inclusive.
+    """
+    if not text:
+        return None
+
+    match = re.match(r"^\s*(\d{4})-(\d{1,2})\s*$", str(text))
+    if match:
+        year, month = int(match.group(1)), int(match.group(2))
+        if 1 <= month <= 12:
+            return datetime(year, month, 15)
+        logger.warning(f"Invalid month in graduation_window bound: {text!r}")
+        return None
+
+    return _parse_graduation_date(str(text))
+
+
+def _extract_years(text: Optional[str]) -> set:
+    """
+    All 4-digit years named in text, expanding "YYYY/YY" academic-year shorthand.
+
+    An academic year names every year it spans, so "2026/2027" and "2026/27" both
+    yield {"2026", "2027"}. Returned as strings for direct set comparison.
+    """
+    if not text:
+        return set()
+
+    years = set(re.findall(r"\b(\d{4})\b", text))
+    for full_year, suffix in ACADEMIC_YEAR_PATTERN.findall(text):
+        years.add(full_year)
+        years.add(full_year[:2] + suffix)
+
+    return years
+
+
+def _extract_season(text: Optional[str]) -> Optional[str]:
+    """Extract a normalized lowercase season name from text, or None."""
+    if not text:
+        return None
+
+    match = SEASON_PATTERN.search(text)
+    if not match:
+        return None
+
+    season = match.group(1).lower()
+    return "fall" if season == "autumn" else season
 
 
 def _parse_graduation_date(text: str) -> Optional[datetime]:
@@ -210,31 +320,51 @@ def _parse_work_auth_level(text: str) -> Optional[int]:
     return None
 
 
-def check_class_standing(user_standing: Optional[str], job_requirement: Optional[str]) -> Tuple[bool, str]:
+def check_class_standing(user_standing: Optional[str], job_requirement: Optional[str],
+                         standing_range: Optional["ClassStandingRange"] = None) -> Tuple[bool, str]:
     """
     Check if user's class standing meets job requirement.
+
+    Prefers the AI's normalized bounds when available and falls back to parsing the
+    verbatim requirement text. Only the structured path enforces an upper bound — prose
+    gives no reliable way to tell a ceiling from a list of examples.
 
     Args:
         user_standing: User's current class standing (e.g., "Junior")
         job_requirement: Job's class standing requirement (e.g., "Rising Senior")
+        standing_range: AI-normalized minimum/maximum bounds, if extracted
 
     Returns:
         Tuple of (passes, reason)
     """
-    # No requirement = pass
-    if not job_requirement:
-        return True, "No class standing requirement"
-
     # User graduated (no class standing) = pass for any job
     if not user_standing:
         return True, "User is graduated"
 
     user_level = _parse_class_standing(user_standing)
-    job_level = _parse_class_standing(job_requirement)
 
     if user_level is None:
         logger.warning(f"Could not parse user class standing: {user_standing}")
         return True, f"Could not parse user standing: {user_standing}"
+
+    # Structured path: compare against the AI's normalized bounds
+    if standing_range is not None:
+        min_level = _standing_to_level(standing_range.minimum)
+        max_level = _standing_to_level(standing_range.maximum)
+
+        if min_level is not None and user_level < min_level:
+            return False, f"User ({user_standing}) is below minimum standing ({standing_range.minimum})"
+
+        if max_level is not None and user_level > max_level:
+            return False, f"User ({user_standing}) is above maximum standing ({standing_range.maximum})"
+
+        return True, f"User ({user_standing}) is within required standing range"
+
+    # No requirement = pass
+    if not job_requirement:
+        return True, "No class standing requirement"
+
+    job_level = _parse_class_standing(job_requirement)
 
     if job_level is None:
         logger.warning(f"Could not parse job class standing requirement: {job_requirement}")
@@ -246,11 +376,13 @@ def check_class_standing(user_standing: Optional[str], job_requirement: Optional
         return False, f"User ({user_standing}) does not meet requirement ({job_requirement})"
 
 
-def check_graduation_timeline(user_grad_date: Optional[str], job_timeline: Optional[str]) -> Tuple[bool, str]:
+def check_graduation_timeline(user_grad_date: Optional[str], job_timeline: Optional[str],
+                              grad_window: Optional["GraduationWindow"] = None) -> Tuple[bool, str]:
     """
     Check if user's graduation date fits job's timeline.
 
-    Handles three types of requirements:
+    Prefers the AI's normalized window when available. The text fallback below handles
+    these requirement shapes:
     1. Enrollment questions: "Are you enrolled during Summer 2026?" - user must still be a student
     2. Graduate after: "graduation date December 2027 or later" - user must graduate AFTER date
     3. Graduate by: "Must graduate by June 2026" - user must graduate BEFORE date
@@ -258,24 +390,39 @@ def check_graduation_timeline(user_grad_date: Optional[str], job_timeline: Optio
     Args:
         user_grad_date: User's expected graduation (e.g., "May 2028")
         job_timeline: Job's graduation requirement
+        grad_window: AI-normalized earliest/latest bounds, if extracted
 
     Returns:
         Tuple of (passes, reason)
     """
-    # No requirement = pass
-    if not job_timeline:
-        return True, "No graduation timeline requirement"
-
     # No user graduation date = pass (already graduated or not specified)
     if not user_grad_date:
         return True, "User graduation date not specified"
 
-    job_lower = job_timeline.lower()
     user_date = _parse_graduation_date(user_grad_date)
 
     if user_date is None:
         logger.warning(f"Could not parse user graduation date: {user_grad_date}")
         return True, f"Could not parse user graduation: {user_grad_date}"
+
+    # Structured path: bounds check against the AI's normalized window
+    if grad_window is not None:
+        earliest = _parse_year_month(grad_window.earliest)
+        latest = _parse_year_month(grad_window.latest)
+
+        if earliest is not None and user_date < earliest:
+            return False, f"User graduates ({user_grad_date}) before earliest allowed ({grad_window.earliest})"
+
+        if latest is not None and user_date > latest:
+            return False, f"User graduates ({user_grad_date}) after latest allowed ({grad_window.latest})"
+
+        return True, f"User graduates ({user_grad_date}) within the allowed window"
+
+    # No requirement = pass
+    if not job_timeline:
+        return True, "No graduation timeline requirement"
+
+    job_lower = job_timeline.lower()
 
     # Pattern 1: Enrollment questions ("enrolled during X", "currently enrolled", "pursuing")
     # If asking about enrollment during a period, user must NOT have graduated yet by then
@@ -351,13 +498,19 @@ def check_graduation_timeline(user_grad_date: Optional[str], job_timeline: Optio
         return False, f"User graduates ({user_grad_date}) after deadline ({job_timeline})"
 
 
-def check_season_year(user_target: Optional[str], job_season_year: Optional[str]) -> Tuple[bool, str]:
+def check_season_year(user_target: Optional[str], job_season_year: Optional[str],
+                      season_parsed: Optional["SeasonYearParsed"] = None) -> Tuple[bool, str]:
     """
     Check if job's season/year matches user's preference.
+
+    The structured path enforces the season as well as the year. The text fallback stays
+    year-only: it cannot reliably identify a season in prose, and guessing one there would
+    manufacture false negatives.
 
     Args:
         user_target: User's target season/year (e.g., "Summer 2025") or None for any
         job_season_year: Job's season/year (e.g., "Summer 2025")
+        season_parsed: AI-normalized season and years, if extracted
 
     Returns:
         Tuple of (passes, reason)
@@ -365,6 +518,24 @@ def check_season_year(user_target: Optional[str], job_season_year: Optional[str]
     # User has no preference = pass
     if not user_target:
         return True, "User has no season/year preference"
+
+    # Structured path: compare years as sets, then require the season to agree
+    if season_parsed is not None:
+        user_years = _extract_years(user_target)
+        job_years = {str(year) for year in season_parsed.years}
+
+        if job_years and user_years and not (user_years & job_years):
+            return False, f"Year mismatch: user wants {user_target}, job covers {sorted(job_years)}"
+
+        # A posting that names no season cannot mismatch one, so it passes on years alone.
+        # Both sides go through _extract_season so "autumn" normalizes to "fall" on either.
+        job_season = _extract_season(season_parsed.season)
+        user_season = _extract_season(user_target)
+
+        if job_season and user_season and job_season != user_season:
+            return False, f"Season mismatch: user wants {user_target}, job is {season_parsed.season}"
+
+        return True, f"Season/year matches user target ({user_target})"
 
     # Job has no season/year specified = pass
     if not job_season_year:
@@ -377,17 +548,19 @@ def check_season_year(user_target: Optional[str], job_season_year: Optional[str]
     if user_norm == job_norm:
         return True, f"Season/year matches: {job_season_year}"
 
-    # Check if year matches at least
-    user_year = re.search(r"\d{4}", user_target)
-    job_year = re.search(r"\d{4}", job_season_year)
+    # Compare every year named on each side — an academic year like "2026/2027" names two,
+    # and matching only the first one rejects jobs the user is eligible for
+    user_years = _extract_years(user_target)
+    job_years = _extract_years(job_season_year)
 
     # Job has no year specified (e.g., just "Summer") = pass (can't determine mismatch)
-    if not job_year:
+    if not job_years:
         return True, f"Job has no year specified: {job_season_year}"
 
-    if user_year and job_year and user_year.group() == job_year.group():
+    overlap = user_years & job_years
+    if overlap:
         # Same year, different season - might be close enough
-        return True, f"Year matches: {job_year.group()}"
+        return True, f"Year matches: {sorted(overlap)[0]}"
 
     return False, f"Season/year mismatch: user wants {user_target}, job is {job_season_year}"
 
@@ -506,19 +679,31 @@ def passes_hard_filters(user: UserProfile, job: ExtractedJob) -> Tuple[bool, str
         return False, reason, "job_type"
 
     # Check class standing
-    passed, reason = check_class_standing(user.class_standing, job.class_standing_requirement)
+    passed, reason = check_class_standing(
+        user.class_standing,
+        job.class_standing_requirement,
+        job.class_standing_range
+    )
     if not passed:
         logger.debug(f"Job failed class standing filter: {reason}")
         return False, reason, "class_standing"
 
     # Check graduation timeline
-    passed, reason = check_graduation_timeline(user.graduation_date, job.graduation_timeline)
+    passed, reason = check_graduation_timeline(
+        user.graduation_date,
+        job.graduation_timeline,
+        job.graduation_window
+    )
     if not passed:
         logger.debug(f"Job failed graduation timeline filter: {reason}")
         return False, reason, "graduation"
 
     # Check season/year
-    passed, reason = check_season_year(user.target_season_year, job.season_year)
+    passed, reason = check_season_year(
+        user.target_season_year,
+        job.season_year,
+        job.season_year_parsed
+    )
     if not passed:
         logger.debug(f"Job failed season/year filter: {reason}")
         return False, reason, "season_year"
