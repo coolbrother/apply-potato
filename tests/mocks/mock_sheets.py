@@ -6,7 +6,7 @@ Stores data in memory instead of making API calls.
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from src.sheets import JobRow, COLUMNS, HEADERS, STATUS_NEW
+from src.sheets import JobRow, COLUMNS, HEADERS, STATUS_NEW, date_already_recorded
 
 
 class MockSheetsClient:
@@ -137,7 +137,13 @@ class MockSheetsClient:
             row[notes_idx] = new_note
 
     def add_date_to_column(self, row_number: int, column: str, date_str: str) -> None:
-        """Add date to a date column (semicolon-separated)."""
+        """Add date to a date column (semicolon-separated).
+
+        Shares date_already_recorded() with the real client rather than reimplementing
+        the rule. Note the fidelity gap: this mock stores raw strings, so it cannot
+        reproduce the API's FORMATTED_VALUE unpadding that broke the real dedupe —
+        that case is covered directly in tests/test_sheets.py.
+        """
         if row_number < 2 or row_number > len(self.rows):
             return
 
@@ -154,9 +160,8 @@ class MockSheetsClient:
         existing = row[col_idx]
 
         if existing:
-            existing_dates = [d.strip() for d in existing.split(";")]
-            if date_str in existing_dates:
-                return  # Already exists
+            if date_already_recorded(existing, date_str):
+                return
             row[col_idx] = f"{existing}; {date_str}"
         else:
             row[col_idx] = date_str

@@ -266,12 +266,18 @@ def _parse_status_colors() -> Dict[str, str]:
         e.g., {"Applied": "#E3F2FD", "OA": "#B3E5FC"}
     """
     # Status names must match the values used in sheets.py
-    status_names = ["Applied", "OA", "Phone", "Technical", "Offer", "Rejected"]
+    status_names = ["New", "Applied", "OA", "Phone", "Technical", "Offer", "Rejected"]
+
+    # A new row inherits the formatting of the row above it when appended, so "New"
+    # needs a color of its own — without one, the status color of whatever row came
+    # before bleeds down into every job added after it.
+    fallbacks = {"New": "#FFFFFF"}
+
     colors = {}
 
     for status in status_names:
         env_key = f"STATUS_COLOR_{status.upper()}"
-        color = os.getenv(env_key, "").strip()
+        color = os.getenv(env_key, "").strip() or fallbacks.get(status, "")
 
         # Validate hex color format
         if color:

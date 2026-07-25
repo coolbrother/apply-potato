@@ -4,7 +4,7 @@ Handles all CRUD operations for the Jobs tab.
 """
 
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from dataclasses import dataclass
@@ -71,6 +71,97 @@ def normalize_date(date_str: str) -> str:
 
     # Return as-is if no format matched
     return date_str
+
+
+# Google Sheets serial-date epoch: serial 0 is 1899-12-30.
+SHEETS_EPOCH = datetime(1899, 12, 30)
+
+# Formats a date cell can arrive in. %m and %d accept both "07" and "7", so each
+# entry covers the zero-padded form Python writes and the unpadded form Sheets displays.
+_CELL_DATE_FORMATS = ("%m/%d/%Y %H:%M:%S", "%m/%d/%Y %H:%M", "%m/%d/%Y")
+
+
+def parse_sheet_datetime(value: Any) -> Optional[datetime]:
+    """
+    Parse a single date cell value into a datetime.
+
+    Handles every shape a date column can come back as:
+    - Sheets serial numbers (what valueRenderOption=FORMULA returns; the fractional
+      part carries the time of day)
+    - ISO 8601 strings (used by the JSON state files)
+    - "M/D/YYYY H:MM:SS" / "M/D/YYYY", zero-padded or not
+
+    Returns None if the value is blank or unparseable. Pass one value, not a
+    semicolon-joined cell — use split_date_cell() for that.
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+    # Sheets serial number (days since 1899-12-30). "inf" raises OverflowError.
+    try:
+        return SHEETS_EPOCH + timedelta(days=float(text))
+    except (ValueError, TypeError, OverflowError):
+        pass
+
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        pass
+
+    for fmt in _CELL_DATE_FORMATS:
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+
+    return None
+
+
+def split_date_cell(value: Any) -> List[str]:
+    """Split a possibly semicolon-joined date cell into trimmed, non-empty segments."""
+    if value is None:
+        return []
+    return [segment.strip() for segment in str(value).split(";") if segment.strip()]
+
+
+def date_already_recorded(existing: Any, date_str: str) -> bool:
+    """
+    Check whether date_str's calendar date is already present in a date cell.
+
+    Compares parsed dates rather than raw text. The cell is read back as
+    FORMATTED_VALUE, so an existing real datetime arrives unpadded and with a time
+    ("7/23/2026 20:28:52") while the incoming value is zero-padded and may be
+    date-only ("07/23/2026"). A raw string compare never matches those, which is
+    what caused the same date to be appended to a cell over and over.
+
+    Args:
+        existing: Current cell value (formatted text, a serial number, or a
+            semicolon-joined mix of both).
+        date_str: The value about to be written.
+
+    Returns:
+        True if the same calendar date is already in the cell.
+    """
+    new_dt = parse_sheet_datetime(date_str)
+    target = str(date_str).strip()
+
+    for segment in split_date_cell(existing):
+        # Exact match first, so unparseable-but-identical text still dedupes.
+        if segment == target:
+            return True
+        if new_dt is None:
+            continue
+        existing_dt = parse_sheet_datetime(segment)
+        if existing_dt and existing_dt.date() == new_dt.date():
+            return True
+
+    return False
 
 
 # Google Sheets API scopes
@@ -554,6 +645,15 @@ class SheetsClient:
         except (IndexError, ValueError):
             row_num = -1
 
+        # INSERT_ROWS inherits the row above's formatting, so a job appended under a
+        # status-colored row comes out colored too. The row is written either way —
+        # a formatting failure must not read as a failed append.
+        if row_num > 0:
+            try:
+                self.apply_status_color(row_num, row[COLUMNS["status"]])
+            except Exception as e:
+                print(f"Warning: could not set row {row_num} color: {e}")
+
         return row_num
 
     def update_job(self, row_number: int, updates: Dict[str, Any]) -> None:
@@ -703,6 +803,10 @@ class SheetsClient:
         """
         Add a date to a date column (semicolon-separated if multiple).
 
+        For event columns that can legitimately hold several dates — a rescheduled
+        assessment, a second interview round. NOT for application_date, which is
+        single-valued; write that one through update_job.
+
         Args:
             row_number: 1-indexed row number.
             column: Column name (oa_date, phone_date, tech_date).
@@ -727,11 +831,12 @@ class SheetsClient:
 
         existing = self._retry_with_backoff(get_existing)
 
-        # Check if date already exists (prevent duplicates)
+        # Skip if this calendar date is already recorded. Compares parsed dates, not
+        # raw text: the read above returns FORMATTED_VALUE, so an existing datetime
+        # comes back unpadded while date_str is zero-padded.
         if existing:
-            existing_dates = [d.strip() for d in existing.split(";")]
-            if date_str in existing_dates:
-                return  # Date already exists, skip
+            if date_already_recorded(existing, date_str):
+                return
             combined = f"{existing}; {date_str}"
         else:
             combined = date_str
@@ -817,7 +922,7 @@ class SheetsClient:
 
         Args:
             row_number: 1-indexed row number.
-            status: Status value (Applied, OA, Phone, Technical, Offer, Rejected)
+            status: Status value (New, Applied, OA, Phone, Technical, Offer, Rejected)
         """
         color = self.config.status_colors.get(status)
         if color:

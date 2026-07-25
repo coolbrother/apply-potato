@@ -68,7 +68,7 @@ Single `.env` file (see `.env.example`). `get_config()` is a module-level single
 | `src/filters.py` | Hard eligibility filters (binary) |
 | `src/scoring.py` | Soft fit score 0–100 |
 | `src/deduplication.py` | URL normalization + three-tier caching |
-| `src/sheets.py` | Google Sheets CRUD, 18-column schema, color formatting |
+| `src/sheets.py` | Google Sheets CRUD, 21-column schema (A–U), date parsing/dedupe helpers, color formatting |
 | `src/gmail.py` | Gmail API client, OAuth, Primary inbox only |
 | `src/email_classifier.py` | AI email classification → status category |
 | `src/email_filters.py` | Pre-AI noise filter for automated/transactional mail |
