@@ -18,8 +18,12 @@ Windowed metrics (by timestamp stored in the Sheet / filled_forms.json):
   - Jobs with docs ready / Phase 2 complete (status New + docs on disk)
   - Forms filled but not yet submitted (filled_forms.json, status != Applied)
   - Jobs applied in window (application_date within window)
-Running total (NOT windowed):
+Running totals (NOT windowed):
   - Total pending (status == New)
+  - Season funnel: cumulative count of jobs that have reached each stage this
+    season (Applied / OA / Phone / Technical / Offer / Rejected / Ghosted).
+    "Reached" is date-driven where a date column exists, so a job that is now
+    Rejected still counts toward Applied/OA/Phone/Technical.
 """
 
 import argparse
@@ -35,7 +39,11 @@ import httpx
 
 from src.config import get_config
 from src.logging_config import setup_logging, get_logger
-from src.sheets import get_sheets_client
+from src.sheets import (
+    get_sheets_client,
+    STATUS_APPLIED, STATUS_GHOSTED, STATUS_NEW, STATUS_OA, STATUS_OFFER,
+    STATUS_PHONE, STATUS_REJECTED, STATUS_TECHNICAL,
+)
 
 
 def _parse_dt(value) -> datetime | None:
@@ -86,6 +94,85 @@ def _stem(row_num: int, company: str) -> str:
     return f"{row_num}_{_sanitize(company)}"
 
 
+# Statuses that imply the application was submitted, even if the Application Date
+# cell was never filled in (e.g. status advanced by the Gmail classifier).
+POST_APPLY_STATUSES = {
+    STATUS_APPLIED, STATUS_OA, STATUS_PHONE, STATUS_TECHNICAL,
+    STATUS_OFFER, STATUS_REJECTED, STATUS_GHOSTED,
+}
+
+# Statuses where the pipeline has stopped moving for that job.
+CLOSED_STATUSES = {STATUS_OFFER, STATUS_REJECTED, STATUS_GHOSTED}
+
+
+def _has_value(cell) -> bool:
+    """Whether a Sheets cell holds anything. Date cells come back as serial floats."""
+    return bool(str(cell or "").strip())
+
+
+def _season_matches(target: str | None, job_season_year: str | None) -> bool:
+    """Whether a job row belongs to the user's target season.
+
+    Mirrors filters.check_season_year: no target, or a job with no season/year (or
+    no year in it) counts as a match, since those rows were admitted to the sheet
+    as candidates for the current season.
+    """
+    if not target:
+        return True
+
+    job = str(job_season_year or "").strip()
+    if not job:
+        return True
+
+    job_year = re.search(r"\d{4}", job)
+    if not job_year:
+        return True
+
+    target_year = re.search(r"\d{4}", target)
+    if not target_year:
+        return True
+
+    return target_year.group() == job_year.group()
+
+
+def _season_totals(jobs, target_season_year: str | None) -> dict[str, int]:
+    """Cumulative per-stage counts for every job in the target season.
+
+    Each stage counts jobs that ever *reached* it, not jobs currently sitting in
+    it — a job now marked Rejected still counts toward Applied and any interview
+    stage whose date column is filled. Stages are therefore not mutually
+    exclusive and will not sum to the season total.
+    """
+    totals = {
+        "in_season": 0, "applied": 0, "oa": 0, "phone": 0, "technical": 0,
+        "offer": 0, "rejected": 0, "ghosted": 0, "awaiting": 0,
+    }
+
+    for job in jobs:
+        if not _season_matches(target_season_year, job.season_year):
+            continue
+        totals["in_season"] += 1
+
+        if _has_value(job.application_date) or job.status in POST_APPLY_STATUSES:
+            totals["applied"] += 1
+            if job.status not in CLOSED_STATUSES:
+                totals["awaiting"] += 1
+        if _has_value(job.oa_date) or job.status == STATUS_OA:
+            totals["oa"] += 1
+        if _has_value(job.phone_date) or job.status == STATUS_PHONE:
+            totals["phone"] += 1
+        if _has_value(job.tech_date) or job.status == STATUS_TECHNICAL:
+            totals["technical"] += 1
+        if job.status == STATUS_OFFER:
+            totals["offer"] += 1
+        elif job.status == STATUS_REJECTED:
+            totals["rejected"] += 1
+        elif job.status == STATUS_GHOSTED:
+            totals["ghosted"] += 1
+
+    return totals
+
+
 def _resolve_window(window: str | None, now: datetime) -> tuple[str, datetime, datetime]:
     """Return (window_name, start, end) for the summary.
 
@@ -110,13 +197,18 @@ def main() -> None:
         default=None,
         help="Force the summary window. Defaults to clock inference (morning if <13:00).",
     )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the summary instead of posting it to Discord.",
+    )
     args = parser.parse_args()
 
     config = get_config()
     setup_logging("daily_summary", config, console=False)
     logger = get_logger(__name__)
     webhook_url = config.discord.form_fill_webhook_url
-    if not webhook_url:
+    if not webhook_url and not args.dry_run:
         logger.error("FORM_FILL_DISCORD_WEBHOOK not set in .env")
         sys.exit(1)
 
@@ -147,7 +239,7 @@ def main() -> None:
             discovered += 1
             if job.dream == "Yes":
                 dream += 1
-            if job.status == "New":
+            if job.status == STATUS_NEW:
                 stem = _stem(job.row_number, job.company)
                 folder = output_dir / stem
                 has_docs = (
@@ -160,7 +252,7 @@ def main() -> None:
         if job.application_date and in_window(_parse_dt(job.application_date)):
             applied += 1
 
-        if job.status == "New":
+        if job.status == STATUS_NEW:
             new_total += 1
 
     # Count forms filled in window that haven't been submitted yet
@@ -172,7 +264,7 @@ def main() -> None:
             for entry in entries:
                 if in_window(_parse_dt(entry.get("filled_at"))):
                     status = row_status.get(entry.get("row"), "")
-                    if status != "Applied":
+                    if status != STATUS_APPLIED:
                         filled_not_submitted += 1
         except (json.JSONDecodeError, OSError):
             pass
@@ -217,6 +309,10 @@ def main() -> None:
         if count > 0
     )
 
+    target_season = config.user.target_season_year
+    totals = _season_totals(jobs, target_season)
+    season_label = target_season or "All Time"
+
     msg = (
         f"📊 **Pipeline Summary — {range_label}**\n"
         f"{divider}\n"
@@ -228,8 +324,24 @@ def main() -> None:
         f"📋 Filled, not submitted:  **{filled_not_submitted}**\n"
         f"✅ Applied:                 **{applied}**\n"
         f"{divider}\n"
-        f"📥 Total pending (New):    **{new_total}**"
+        f"📥 Total pending (New):    **{new_total}**\n"
+        f"\n"
+        f"🏆 **Season Totals — {season_label}**\n"
+        f"{divider}\n"
+        f"✅ Applied:                 **{totals['applied']}**\n"
+        f"📝 OA:                      **{totals['oa']}**\n"
+        f"📞 Phone interview:        **{totals['phone']}**\n"
+        f"💻 Technical interview:    **{totals['technical']}**\n"
+        f"🎉 Offer:                   **{totals['offer']}**\n"
+        f"❌ Rejected:                **{totals['rejected']}**\n"
+        f"👻 Ghosted:                 **{totals['ghosted']}**\n"
+        f"⏳ Awaiting response:      **{totals['awaiting']}**\n"
+        f"_Cumulative — a job counts toward every stage it reached._"
     )
+
+    if args.dry_run:
+        print(msg)
+        sys.exit(0)
 
     try:
         resp = httpx.post(webhook_url, json={"content": msg}, timeout=10.0)
