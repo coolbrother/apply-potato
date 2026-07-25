@@ -40,8 +40,20 @@ Extract the following fields:
     "salary_period": "hourly | monthly | yearly | null",
     "currency": "USD | EUR | etc. or null",
     "class_standing_requirement": "Exact text from posting (e.g., 'entering junior year or senior year') or null",
+    "class_standing_range": {
+        "minimum": "Freshman | Sophomore | Junior | Senior | Graduate | PhD | null",
+        "maximum": "Freshman | Sophomore | Junior | Senior | Graduate | PhD | null"
+    },
     "graduation_timeline": "Specific requirement like 'Must graduate by June 2026' or null",
+    "graduation_window": {
+        "earliest": "YYYY-MM or null",
+        "latest": "YYYY-MM or null"
+    },
     "season_year": "Summer 2025 | Fall 2025 | Spring 2026 | null",
+    "season_year_parsed": {
+        "season": "Summer | Fall | Spring | Winter | null",
+        "years": [2026, 2027]
+    },
     "work_authorization": "US Citizens Only | Sponsorship Available | Must be authorized | null",
     "sponsorship_available": true | false | null,
     "gpa_requirement": number or null (e.g., 3.0, 3.5),
@@ -75,6 +87,55 @@ class_standing_requirement:
 - Do NOT put major/degree info here (goes in required_majors instead)
 - If no year-level or enrollment requirement mentioned, use null
 
+class_standing_range:
+- This is the NORMALIZED version of class_standing_requirement. Keep class_standing_requirement
+  as the exact original text; put your interpretation here.
+- Allowed values, ordered from least to most senior:
+  Freshman < Sophomore < Junior < Senior < Graduate < PhD
+- "minimum" = the LEAST senior standing a student may hold and still be eligible
+- "maximum" = the MOST senior standing still eligible
+
+- How to read common phrasings:
+  - "rising X" means the student is CURRENTLY one year below X
+    - "rising senior" → minimum: "Junior"
+    - "rising junior" → minimum: "Sophomore"
+  - "entering X year" also means CURRENTLY one year below X
+    - "entering junior year" → minimum: "Sophomore"
+  - "penultimate year" = second-to-last year; assume a 4-year program → minimum: "Junior"
+  - "approaching their final year" = one year before the final year → minimum: "Junior"
+  - "final year" / "last year" → minimum: "Senior"
+  - A list of acceptable years sets BOTH bounds from the lowest and highest named
+    - "must be a Junior or Senior" → minimum: "Junior", maximum: "Senior"
+    - "freshmen and sophomores only" → minimum: "Freshman", maximum: "Sophomore"
+  - Open-ended language sets NO maximum
+    - "Junior or above" → minimum: "Junior", maximum: null
+  - Enrollment-only requirements mean ANY currently enrolled student qualifies
+    - "currently enrolled", "current student", "matriculated in an undergraduate program",
+      "must be pursuing a bachelor's degree" → minimum: "Freshman", maximum: null
+    - "At the end of the internship, you must return to school to continue your education or the
+      internship must be the last requirement for you to graduate" → minimum: "Freshman",
+      maximum: null (this requires being a student; it sets NO year level)
+
+- KEY RULE — "graduate" as a VERB is not a class standing:
+  - Only the NOUN sense means the Graduate level: "graduate student", "graduate program",
+    "graduate degree", "enrolled in graduate school" → "Graduate"
+  - The VERB describes finishing a degree and says NOTHING about year level:
+    "to graduate", "before you graduate", "the last requirement for you to graduate",
+    "you will graduate in 2027" → do NOT set "Graduate" because of these
+  - "graduate students only" → minimum: "Graduate", maximum: "PhD"
+
+- KEY RULE — only set "maximum" when the posting genuinely EXCLUDES more senior students:
+  - Set it for restrictive wording: "only", "exclusively", "must be a X", or a closed list
+    of acceptable years ("open to sophomores and juniors")
+  - Do NOT set it for descriptive or welcoming wording: "rising seniors encouraged to apply",
+    "ideal for juniors", "we especially welcome seniors" → maximum: null
+  - When in doubt, use null. A wrong maximum silently rejects a job the applicant could have got.
+
+- KEY RULE — null means "the posting states no such requirement", NOT "anyone qualifies":
+  - If the posting requires enrollment but names no year level, that is minimum: "Freshman"
+    (any student), NOT null
+  - Use null only when the posting is genuinely silent about class standing
+
 graduation_timeline:
 - This field is ONLY for when someone must COMPLETE/FINISH their degree (graduation date)
 - Copy the exact wording if there's a specific graduation deadline
@@ -91,10 +152,62 @@ graduation_timeline:
 - graduation_timeline is ONLY for language like "graduating in", "will graduate by", "expected graduation", "must complete degree by"
 - If no graduation deadline mentioned, use null
 
+graduation_window:
+- This is the NORMALIZED version of graduation_timeline, as a date range in "YYYY-MM" form.
+  Keep graduation_timeline as the exact original text; put your interpretation here.
+- "earliest" = the SOONEST the student may graduate and still be eligible
+- "latest"   = the LATEST the student may graduate and still be eligible
+- Either bound may be null, meaning that side is unbounded.
+
+- How to read common phrasings:
+  - Deadline language — "by", "before", "no later than", "must graduate by" — sets "latest"
+    - "Must graduate by June 2026" → {"earliest": null, "latest": "2026-06"}
+  - Floor language — "or later", "and later", "after", "no earlier than" — sets "earliest"
+    - "Graduation date December 2027 or later" → {"earliest": "2027-12", "latest": null}
+  - A range sets both
+    - "Must graduate between Dec 2025 and June 2026" → {"earliest": "2025-12", "latest": "2026-06"}
+  - KEY RULE — a NEGATED "before" is a FLOOR, not a deadline. Read the whole phrase, not the
+    word "before" on its own:
+    - "Not graduating before May 2026" → {"earliest": "2026-05", "latest": null}
+      (this means graduate ON or AFTER May 2026 — it is NOT a deadline of May 2026)
+  - Enrollment during a period means the student must NOT have graduated before that period ends,
+    so it sets "earliest":
+    - "Must be enrolled during Summer 2026" → {"earliest": "2026-08", "latest": null}
+  - A bare date with no qualifying word defaults to a DEADLINE
+    - "Graduation: May 2026" → {"earliest": null, "latest": "2026-05"}
+  - If the posting states no graduation requirement → {"earliest": null, "latest": null}
+
+- When a term or season is named instead of a month, convert it using this convention:
+  - Spring → May (05)
+  - Summer → August (08)
+  - Fall   → December (12)
+  - Winter → December (12)
+  - A bare year with no season → May (05)
+- The same distinction from graduation_timeline applies here: enrollment and credit-hour
+  milestones are NOT graduation dates. If a sentence says the person must be ENROLLED or
+  PURSUING a degree, do not treat its date as a graduation deadline.
+
 season_year:
 - Extract EXACTLY as written in the posting, no modification
 - Do NOT infer, guess, or add information
 - If no season/year mentioned, use null
+
+season_year_parsed:
+- This is the NORMALIZED version of season_year. Keep season_year as the exact original text;
+  put your interpretation here.
+- "season" = one of Summer | Fall | Spring | Winter, or null if the posting names no season
+- "years"  = EVERY calendar year the term covers, as 4-digit integers, or [] if none is named
+- KEY RULE — an academic-year span names EVERY year it covers, not just the first:
+  - "2026/2027"        → {"season": null, "years": [2026, 2027]}
+  - "2026-2027"        → {"season": null, "years": [2026, 2027]}
+  - "Summer 2026/2027" → {"season": "Summer", "years": [2026, 2027]}
+- Expand two-digit shorthand to full years:
+  - "2026/27"  → {"season": null, "years": [2026, 2027]}
+  - "AY26-27"  → {"season": null, "years": [2026, 2027]}
+- Other examples:
+  - "Summer 2026"       → {"season": "Summer", "years": [2026]}
+  - "Summer Internship" → {"season": "Summer", "years": []}
+  - season_year is null → {"season": null, "years": []}
 
 work_authorization:
 - Extract EXACTLY as written in the posting, no modification
