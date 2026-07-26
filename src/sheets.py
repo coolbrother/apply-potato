@@ -943,6 +943,96 @@ class SheetsClient:
         if color:
             self.set_row_color(row_number, color)
 
+    def set_row_strikethrough(self, row_number: int, struck: bool = True) -> None:
+        """
+        Strike through (or un-strike) an entire row.
+
+        Strikethrough marks a row as retired: a duplicate of another row, or a
+        posting the user did not actually apply to. The Gmail matcher skips struck
+        rows, so this is how an ambiguous company is narrowed to one live row.
+
+        Args:
+            row_number: 1-indexed row number.
+            struck: True to strike through, False to clear it.
+        """
+        service = self._get_service()
+        sheet_id = self.config.google_sheet_id
+        jobs_sheet_id = self._get_jobs_sheet_id()
+
+        request = {
+            "repeatCell": {
+                "range": {
+                    "sheetId": jobs_sheet_id,
+                    "startRowIndex": row_number - 1,  # 0-indexed
+                    "endRowIndex": row_number,
+                    "startColumnIndex": 0,
+                    "endColumnIndex": len(COLUMNS)
+                },
+                "cell": {
+                    "userEnteredFormat": {
+                        "textFormat": {"strikethrough": bool(struck)}
+                    }
+                },
+                "fields": "userEnteredFormat.textFormat.strikethrough"
+            }
+        }
+
+        def apply_strike():
+            service.spreadsheets().batchUpdate(
+                spreadsheetId=sheet_id,
+                body={"requests": [request]}
+            ).execute()
+
+        self._retry_with_backoff(apply_strike)
+
+    def get_struck_rows(self) -> set:
+        """
+        Row numbers whose text is struck through.
+
+        Reads formatting, which values().get() does not return, so this is a
+        separate API call from get_all_jobs(). Only columns A:B are inspected — a
+        row counts as retired if either Company or Position is struck. That covers
+        both natural gestures: striking the whole row, and striking just the
+        position cell.
+
+        Uses effectiveFormat so a strikethrough inherited from row- or
+        column-level formatting counts the same as one applied to the cell.
+
+        Returns:
+            Set of 1-indexed row numbers. Empty if the sheet has no data.
+        """
+        service = self._get_service()
+        sheet_id = self.config.google_sheet_id
+
+        def fetch():
+            return service.spreadsheets().get(
+                spreadsheetId=sheet_id,
+                ranges=[self._range("A2:B")],  # Skip header row
+                includeGridData=True,
+                fields="sheets.data.rowData.values.effectiveFormat.textFormat.strikethrough",
+            ).execute()
+
+        result = self._retry_with_backoff(fetch)
+
+        struck = set()
+        sheets = result.get("sheets", [])
+        if not sheets:
+            return struck
+
+        data = sheets[0].get("data", [])
+        if not data:
+            return struck
+
+        for i, row in enumerate(data[0].get("rowData", [])):
+            row_number = i + 2  # 1-indexed, skip header
+            for cell in row.get("values", []):
+                fmt = cell.get("effectiveFormat", {}).get("textFormat", {})
+                if fmt.get("strikethrough"):
+                    struck.add(row_number)
+                    break
+
+        return struck
+
 
 # Singleton client instance
 _client: Optional[SheetsClient] = None

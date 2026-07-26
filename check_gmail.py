@@ -22,8 +22,9 @@ Usage:
 import argparse
 import logging
 import time
+from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional
 
 from apscheduler.schedulers.blocking import BlockingScheduler
 
@@ -32,6 +33,13 @@ from src.logging_config import setup_logging
 from src.gmail import GmailClient, get_gmail_clients, EmailMessage
 from src.email_filters import apply_privacy_filters
 from src.email_classifier import EmailClassifier, get_classifier, EmailClassification
+from src.needs_review import (
+    REASON_ALL_RETIRED,
+    REASON_AMBIGUOUS,
+    REASON_NO_COMPANY,
+    REASON_UNTRACKED,
+    record_needs_review,
+)
 from src.sheets import SheetsClient, get_sheets_client, JobRow, normalize_date, parse_sheet_datetime
 from src.notifications import is_dream_company, notify_status_change
 
@@ -60,6 +68,25 @@ CATEGORY_TO_DATE_COLUMN = {
 }
 
 
+@dataclass
+class MatchOutcome:
+    """
+    The result of looking for the Sheet row an email belongs to.
+
+    A bare Optional[JobRow] loses the one thing worth reporting when the lookup
+    fails — *why* it failed, and which rows tied. Those go into the review log.
+    """
+
+    job: Optional[JobRow] = None
+    reason: str = ""                              # blank when job is not None
+    company: str = ""                             # candidate the reason is about
+    candidates: List[JobRow] = field(default_factory=list)
+
+    @property
+    def matched(self) -> bool:
+        return self.job is not None
+
+
 class GmailChecker:
     """
     Main Gmail checking pipeline.
@@ -81,6 +108,10 @@ class GmailChecker:
         self.classifier = get_classifier(self.config)
         self.sheets_client = get_sheets_client()
 
+        # Rows the user struck through to retire them. Refreshed once per run()
+        # rather than per email — it costs an API call and cannot change mid-run.
+        self._struck_rows: set = set()
+
         # Stats
         self.stats = {
             "accounts_checked": 0,
@@ -90,38 +121,58 @@ class GmailChecker:
             "matched": 0,
             "updated": 0,
             "no_match": 0,
+            "ambiguous": 0,
             "unknown_category": 0,
         }
 
-    def _find_matching_job(self, classification: EmailClassification) -> Optional[JobRow]:
+    def _find_matching_job(self, classification: EmailClassification) -> MatchOutcome:
         """
         Find a matching job in Sheets by trying all company candidates.
+
+        Never guesses between tied rows — a wrong status write is worse than no
+        write. The first tie encountered is remembered so the caller can report it,
+        then the remaining candidates are still tried, since a later candidate may
+        resolve to exactly one row.
 
         Args:
             classification: Email classification with company candidates and position
 
         Returns:
-            Matching JobRow or None if not found (or ambiguous)
+            A MatchOutcome: the row when exactly one candidate resolved, otherwise
+            the reason no row could be chosen.
         """
         if not classification.company_candidates:
-            return None
+            return MatchOutcome(reason=REASON_NO_COMPANY)
 
         position = classification.position
+        tie: Optional[MatchOutcome] = None
+        retired_only = False  # A company whose rows all exist but are all struck
+
+        def live(rows: List[JobRow]) -> List[JobRow]:
+            """Drop rows the user struck through, remembering if that emptied the list."""
+            nonlocal retired_only
+            kept = [row for row in rows if row.row_number not in self._struck_rows]
+            if rows and not kept:
+                retired_only = True
+            return kept
 
         # Try each company candidate
         for company in classification.company_candidates:
             # Try company + position first (if position available)
             if position:
-                matches = self.sheets_client.find_jobs_by_company_and_position(company, position)
+                matches = live(self.sheets_client.find_jobs_by_company_and_position(company, position))
                 if len(matches) == 1:
                     logger.debug(f"Matched by company + position: {company} + {position}")
-                    return matches[0]
+                    return MatchOutcome(job=matches[0])
                 elif len(matches) > 1:
                     logger.warning(f"Multiple jobs match '{company}' + '{position}', trying next candidate")
+                    tie = tie or MatchOutcome(
+                        reason=REASON_AMBIGUOUS, company=company, candidates=matches
+                    )
                     continue
 
             # Fall back to company only
-            matches = self.sheets_client.find_jobs_by_company(company)
+            matches = live(self.sheets_client.find_jobs_by_company(company))
 
             # Try alternative company name formats if no match
             if not matches:
@@ -131,21 +182,66 @@ class GmailChecker:
                 ]
                 for alt in alternatives:
                     if alt != company:
-                        matches = self.sheets_client.find_jobs_by_company(alt)
+                        matches = live(self.sheets_client.find_jobs_by_company(alt))
                         if matches:
                             logger.debug(f"Found match using alternative company name: {alt}")
                             break
 
             if len(matches) == 1:
                 logger.debug(f"Matched by company only: {company}")
-                return matches[0]
+                return MatchOutcome(job=matches[0])
             elif len(matches) > 1:
                 logger.warning(f"Multiple jobs for '{company}', trying next candidate")
+                tie = tie or MatchOutcome(
+                    reason=REASON_AMBIGUOUS, company=company, candidates=matches
+                )
                 continue
 
         # No match found with any candidate
         logger.info(f"No matching job found for companies: {classification.company_candidates}")
-        return None
+        if tie:
+            return tie
+        return MatchOutcome(
+            reason=REASON_ALL_RETIRED if retired_only else REASON_UNTRACKED,
+            company=classification.company_candidates[0],
+        )
+
+    def _log_needs_review(
+        self,
+        client: GmailClient,
+        email: EmailMessage,
+        classification: EmailClassification,
+        outcome: MatchOutcome,
+    ) -> None:
+        """
+        Record an unmatchable status email in data/needs_review.json.
+
+        The email is still marked processed by the caller, so this log is the only
+        trace it ever arrived. Never fatal: a broken review log must not cost the
+        run the emails it can still match.
+        """
+        try:
+            written = record_needs_review(
+                self.config.data_dir,
+                message_id=email.message_id,
+                reason=outcome.reason,
+                account=client.label,
+                sender=email.sender_email,
+                subject=email.subject,
+                category=classification.category,
+                company=outcome.company,
+                candidates=[
+                    {"row": job.row_number, "position": job.position, "status": job.status}
+                    for job in outcome.candidates
+                ],
+            )
+        except OSError as e:
+            logger.error(f"Could not write needs_review log: {e}")
+            return
+
+        if written:
+            detail = f" ({len(outcome.candidates)} candidate rows)" if outcome.candidates else ""
+            logger.info(f"Flagged for review [{outcome.reason}]: {email.subject[:60]}{detail}")
 
     @staticmethod
     def _local_naive(dt: Optional[datetime]) -> datetime:
@@ -327,11 +423,16 @@ class GmailChecker:
             return False
 
         # Find matching job
-        job = self._find_matching_job(classification)
-        if job is None:
+        outcome = self._find_matching_job(classification)
+        if not outcome.matched:
             self.stats["no_match"] += 1
+            if outcome.reason == REASON_AMBIGUOUS:
+                self.stats["ambiguous"] += 1
+            self._log_needs_review(client, email, classification, outcome)
             client.mark_as_processed(email.message_id)
             return False
+
+        job = outcome.job
 
         self.stats["matched"] += 1
         logger.debug(f"Matched to: {job.company} - {job.position} (row {job.row_number})")
@@ -360,6 +461,17 @@ class GmailChecker:
 
         # Reset stats
         self.stats = {k: 0 for k in self.stats}
+
+        # Struck-through rows are retired: the matcher skips them, which is how an
+        # otherwise ambiguous company narrows to one live row. Never fatal — losing
+        # this only costs tie-breaking, so the run continues without it.
+        try:
+            self._struck_rows = self.sheets_client.get_struck_rows()
+            if self._struck_rows:
+                logger.info(f"Skipping {len(self._struck_rows)} struck-through row(s)")
+        except Exception as e:
+            logger.warning(f"Could not read struck-through rows, treating all as live: {e}")
+            self._struck_rows = set()
 
         # Fetch recent emails from every configured account
         accounts = ", ".join(c.label for c in self.gmail_clients)
@@ -413,7 +525,7 @@ class GmailChecker:
         logger.info(f"  Classified: {self.stats['classified']}")
         logger.info(f"  Unknown category: {self.stats['unknown_category']}")
         logger.info(f"  Matched to jobs: {self.stats['matched']}")
-        logger.info(f"  No match found: {self.stats['no_match']}")
+        logger.info(f"  No match found: {self.stats['no_match']} (ambiguous: {self.stats['ambiguous']})")
         logger.info(f"  Jobs updated: {self.stats['updated']}")
         logger.info("=" * 60)
 

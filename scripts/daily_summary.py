@@ -18,6 +18,7 @@ Windowed metrics (by timestamp stored in the Sheet / filled_forms.json):
   - Jobs with docs ready / Phase 2 complete (status New + docs on disk)
   - Forms filled but not yet submitted (filled_forms.json, status != Applied)
   - Jobs applied in window (application_date within window)
+  - Status emails needing review (needs_review.json), grouped by reason
 Running totals (NOT windowed):
   - Total pending (status == New)
   - Season funnel: cumulative count of jobs that have reached each stage this
@@ -39,6 +40,7 @@ import httpx
 
 from src.config import get_config
 from src.logging_config import setup_logging, get_logger
+from src.needs_review import REASON_LABELS, load_needs_review
 from src.sheets import (
     get_sheets_client,
     parse_sheet_datetime, 
@@ -259,6 +261,17 @@ def main() -> None:
     total_filtered = sum(filter_counts.values())
     scanned = discovered + total_filtered
 
+    # Status emails check_gmail.py could not attribute to a row, grouped by reason.
+    # These were marked processed and will not come back on their own — the summary
+    # is the only place they surface.
+    review_counts: dict[str, int] = {}
+    for entry in load_needs_review(Path(__file__).parent.parent / "data"):
+        if in_window(_parse_dt(entry.get("timestamp"))):
+            reason = entry.get("reason", "other")
+            review_counts[reason] = review_counts.get(reason, 0) + 1
+
+    total_review = sum(review_counts.values())
+
     # %-d / %-I are not supported on Windows; build the label manually.
     def _fmt(dt: datetime) -> str:
         hour12 = dt.hour % 12 or 12
@@ -283,6 +296,12 @@ def main() -> None:
         if count > 0
     )
 
+    review_lines = "".join(
+        f"\n     ↳ {REASON_LABELS.get(reason, reason)}: {count}"
+        for reason, count in sorted(review_counts.items())
+        if count > 0
+    )
+
     target_season = config.user.target_season_year
     totals = _season_totals(jobs, target_season)
     season_label = target_season or "All Time"
@@ -297,6 +316,7 @@ def main() -> None:
         f"📄 Docs ready (Phase 2):   **{docs_ready}**\n"
         f"📋 Filled, not submitted:  **{filled_not_submitted}**\n"
         f"✅ Applied:                 **{applied}**\n"
+        f"⚠️ Needs review:           **{total_review}**{review_lines}\n"
         f"{divider}\n"
         f"📥 Total pending (New):    **{new_total}**\n"
         f"\n"
