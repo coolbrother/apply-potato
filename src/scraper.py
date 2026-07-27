@@ -38,6 +38,10 @@ elif _system == "Windows":
 else:
     USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
+# Matches both the classic boards.greenhouse.io embed and the newer
+# job-boards.greenhouse.io/embed/job_app form.
+GREENHOUSE_IFRAME_SELECTOR = 'iframe[src*="boards.greenhouse.io"], iframe[src*="greenhouse.io"]'
+
 
 class PlaywrightScraper:
     """
@@ -177,10 +181,23 @@ class PlaywrightScraper:
                 # Check for Simplify job pages - click "Full Job Posting" tab
                 is_simplify = "simplify.jobs/p/" in final_url.lower()
 
-                # Check for Greenhouse embedded job pages (gh_jid in URL)
+                # Check for Greenhouse embedded job pages. gh_jid in the URL is the usual
+                # signal, but some sites embed the board without advertising it there: HRT
+                # serves the whole posting from a job_app iframe and leaves the host page as
+                # nav, sidebar and footer, so body text alone is ~1.2k chars of boilerplate
+                # with no title or description. Fall back to looking for the iframe itself.
                 parsed = urlparse(url)
                 query_params = parse_qs(parsed.query)
                 is_greenhouse_embed = "gh_jid" in query_params
+                if not is_greenhouse_embed:
+                    try:
+                        is_greenhouse_embed = await self._page.locator(
+                            GREENHOUSE_IFRAME_SELECTOR
+                        ).count() > 0
+                        if is_greenhouse_embed:
+                            logger.debug("Greenhouse embed detected by iframe, not by gh_jid")
+                    except Exception as e:
+                        logger.debug(f"Could not probe for Greenhouse iframe: {e}")
 
                 content = None
                 if is_simplify:
@@ -200,7 +217,7 @@ class PlaywrightScraper:
                     parent_body = await self._page.inner_text("body")
                     iframe_text = ""
                     try:
-                        iframe_selector = 'iframe[src*="boards.greenhouse.io"], iframe[src*="greenhouse.io"]'
+                        iframe_selector = GREENHOUSE_IFRAME_SELECTOR
                         await self._page.wait_for_selector(iframe_selector, timeout=5000)
                         iframe = self._page.frame_locator(iframe_selector).first
                         # Wait for job content to load in iframe
