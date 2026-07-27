@@ -65,6 +65,7 @@ def _row(row_number: int, company: str, position: str, status: str = "New"):
         status=status,
         application_date="",
         notes="",
+        last_email_time="",
     )
 
 

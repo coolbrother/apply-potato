@@ -51,7 +51,9 @@ Two independent entry points (`scrape_jobs.py`, `check_gmail.py`) share the `src
 
 ### Gmail status pipeline (`check_gmail.py`)
 
-Fetch emails from Primary inbox → privacy filters (`email_filters.py`) → AI classification (`email_classifier.py`, same provider config) → fuzzy-match company to a Sheets row → update status + color + notes → Discord notify on dream company changes.
+Fetch emails from Primary inbox → sort oldest-first → privacy filters (`email_filters.py`) → AI classification (`email_classifier.py`, same provider config) → fuzzy-match company to a Sheets row → skip if the email is older than the row's `Last Email Time` (column V) → update status + color + notes + `Last Email Time` → Discord notify on dream company changes.
+
+The staleness guard is why the batch is sorted: Gmail returns newest-first, and only strictly-newer emails may modify a row, so unsorted processing would apply one email per row and drop the rest. `--reprocess` bypasses the guard.
 
 ### Configuration (`src/config.py`)
 
@@ -68,7 +70,7 @@ Single `.env` file (see `.env.example`). `get_config()` is a module-level single
 | `src/filters.py` | Hard eligibility filters (binary) |
 | `src/scoring.py` | Soft fit score 0–100 |
 | `src/deduplication.py` | URL normalization + three-tier caching |
-| `src/sheets.py` | Google Sheets CRUD, 21-column schema (A–U), date parsing/dedupe helpers, color formatting |
+| `src/sheets.py` | Google Sheets CRUD, 22-column schema (A–V, derived from `COLUMNS`), date parsing/dedupe helpers, color formatting |
 | `src/gmail.py` | Gmail API client, OAuth, Primary inbox only |
 | `src/email_classifier.py` | AI email classification → status category |
 | `src/email_filters.py` | Pre-AI noise filter for automated/transactional mail |

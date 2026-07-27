@@ -123,6 +123,7 @@ class GmailChecker:
             "no_match": 0,
             "ambiguous": 0,
             "unknown_category": 0,
+            "stale_skipped": 0,
         }
 
     def _find_matching_job(self, classification: EmailClassification) -> MatchOutcome:
@@ -275,6 +276,26 @@ class GmailChecker:
             return None
         return self._local_naive(email.date).strftime("%m/%d/%Y %H:%M:%S")
 
+    def _is_newer_than_last_email(self, job: JobRow, email: EmailMessage) -> bool:
+        """
+        True when this email is allowed to modify the row.
+
+        Gmail hands back messages newest-first and several can match one row in a
+        single run, so without this an older email applied after a newer one silently
+        walks the row backwards — a stale confirmation overwriting a fresh rejection.
+
+        A blank cell (every row predating column V) means nothing has been recorded
+        yet, so the email wins. Unparseable is treated the same way: one bad cell must
+        not freeze a row forever. --reprocess deliberately bypasses the check, since
+        re-walking old mail is exactly what that flag is for.
+        """
+        if self.reprocess:
+            return True
+        last = parse_sheet_datetime(job.last_email_time)
+        if last is None:
+            return True
+        return self._local_naive(email.date) > last
+
     def _event_date_value(
         self,
         classification: EmailClassification,
@@ -327,10 +348,26 @@ class GmailChecker:
             logger.warning(f"No status mapping for category: {category}")
             return False
 
+        # Everything below this point writes to the row — status, the date helpers, the
+        # notes append, the color, the Discord ping — so the staleness check has to come
+        # before all of it, not just before the status write.
+        if not self._is_newer_than_last_email(job, email):
+            logger.info(
+                f"Stale email for row {job.row_number} ({job.company}); "
+                f"last recorded {job.last_email_time}, skipping"
+            )
+            self.stats["stale_skipped"] += 1
+            return False
+
         updates = {}
 
         # Update status
         updates["status"] = new_status
+
+        # Rides the same batch as status, so recording it costs no extra API call.
+        updates["last_email_time"] = self._local_naive(email.date).strftime(
+            "%m/%d/%Y %H:%M:%S"
+        )
 
         # Update relevant date column. The two paths differ: application_date is
         # single-valued and must come from the confirmation's arrival time — never from
@@ -462,6 +499,15 @@ class GmailChecker:
         # Reset stats
         self.stats = {k: 0 for k in self.stats}
 
+        # This process may be the only one touching the sheet, so it cannot rely on
+        # scrape_jobs.py to have created the Last Email Time column. Idempotent per
+        # client, so the scheduled loop pays for it once. Never fatal — a missing header
+        # only costs formatting, and the writes below still land.
+        try:
+            self.sheets_client.ensure_headers()
+        except Exception as e:
+            logger.warning(f"Could not verify sheet headers: {e}")
+
         # Struck-through rows are retired: the matcher skips them, which is how an
         # otherwise ambiguous company narrows to one live row. Never fatal — losing
         # this only costs tie-breaking, so the run continues without it.
@@ -505,6 +551,12 @@ class GmailChecker:
 
         self.stats["emails_fetched"] = len(fetched)
 
+        # Oldest first. Gmail returns newest-first, and the staleness guard rejects
+        # anything not strictly newer than the row's Last Email Time — so in that order
+        # a batch would apply only its first email per row and drop the rest, losing the
+        # OA date from a confirmation -> OA -> rejection sequence that arrived together.
+        fetched.sort(key=lambda pair: self._local_naive(pair[1].date))
+
         # Process each email
         for client, email in fetched:
             try:
@@ -526,6 +578,7 @@ class GmailChecker:
         logger.info(f"  Unknown category: {self.stats['unknown_category']}")
         logger.info(f"  Matched to jobs: {self.stats['matched']}")
         logger.info(f"  No match found: {self.stats['no_match']} (ambiguous: {self.stats['ambiguous']})")
+        logger.info(f"  Stale (older than last email): {self.stats['stale_skipped']}")
         logger.info(f"  Jobs updated: {self.stats['updated']}")
         logger.info("=" * 60)
 
