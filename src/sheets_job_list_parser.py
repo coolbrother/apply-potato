@@ -10,7 +10,7 @@ from typing import Dict, List, Optional
 
 from .config import Config, get_config
 from .github_parser import JobListing
-from .sheets import SheetsClient
+from .sheets import SheetsClient, col_letter
 
 logger = logging.getLogger(__name__)
 
@@ -37,10 +37,6 @@ class SheetsJobListParser:
 
     def _get_service(self):
         return self._sheets_client._get_service()
-
-    def _col_letter(self, col_index: int) -> str:
-        """Convert 0-indexed column number to A1 letter (supports A-Z only)."""
-        return chr(ord("A") + col_index)
 
     def fetch_all_jobs(self) -> List[JobListing]:
         """
@@ -132,7 +128,7 @@ class SheetsJobListParser:
         service = self._get_service()
 
         try:
-            result_col_letter = self._col_letter(self._result_col)
+            result_col_letter = col_letter(self._result_col)
             service.spreadsheets().values().update(
                 spreadsheetId=sheet_id,
                 range=f"'{tab}'!{result_col_letter}{row_num}",
@@ -141,7 +137,7 @@ class SheetsJobListParser:
             ).execute()
 
             if notes and self._notes_col is not None:
-                notes_col_letter = self._col_letter(self._notes_col)
+                notes_col_letter = col_letter(self._notes_col)
                 service.spreadsheets().values().update(
                     spreadsheetId=sheet_id,
                     range=f"'{tab}'!{notes_col_letter}{row_num}",

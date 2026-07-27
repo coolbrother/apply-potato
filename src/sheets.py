@@ -3,6 +3,7 @@ Google Sheets integration for ApplyPotato.
 Handles all CRUD operations for the Jobs tab.
 """
 
+import logging
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -16,6 +17,9 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 from .config import get_config, Config
+
+
+logger = logging.getLogger(__name__)
 
 
 def normalize_date(date_str: str) -> str:
@@ -190,6 +194,7 @@ COLUMNS = {
     "resume_needed": 18,        # S
     "cover_letter_needed": 19,  # T
     "notes": 20,                # U
+    "last_email_time": 21,      # V
 }
 
 # Header row (must match column order)
@@ -197,8 +202,34 @@ HEADERS = [
     "Company", "Position", "Status", "Job Posting Date", "Dream",
     "Application Date", "OA Date", "Phone Interview Date", "Tech Interview Date",
     "Fit Score", "Salary", "Job Type", "Work Model", "Location", "Season/Year",
-    "Deadline", "Source", "Added Date", "Resume", "Cover Letter", "Notes"
+    "Deadline", "Source", "Added Date", "Resume", "Cover Letter", "Notes",
+    "Last Email Time"
 ]
+
+
+def col_letter(col_index: int) -> str:
+    """
+    Convert a 0-indexed column number to A1 letters: 0 -> A, 25 -> Z, 26 -> AA.
+
+    The obvious chr(ord("A") + idx) is correct only through Z and then silently
+    emits "[", so it would break the first time the schema crossed 26 columns.
+    """
+    letters = ""
+    while True:
+        col_index, remainder = divmod(col_index, 26)
+        letters = chr(ord("A") + remainder) + letters
+        if col_index == 0:
+            return letters
+        col_index -= 1
+
+
+# Rightmost column of the schema, so every A1 range is derived rather than retyped.
+LAST_COL = col_letter(len(COLUMNS) - 1)
+
+# Number formats, declared by column *name* so adding a column never means
+# recounting indices.
+DATE_COLUMNS = ("job_posting_date", "oa_date", "phone_date", "tech_date", "deadline")
+DATETIME_COLUMNS = ("application_date", "added_date", "last_email_time")
 
 # Status values
 STATUS_NEW = "New"
@@ -237,6 +268,9 @@ class JobRow:
     resume_needed: str      # "Yes" | "No" | ""
     cover_letter_needed: str  # "Yes" | "No" | ""
     notes: str
+    # Arrival time of the most recent email that updated this row. Defaulted because
+    # every other field is required and pre-existing rows have a blank cell.
+    last_email_time: str = ""
 
     @classmethod
     def from_row(cls, row_number: int, values: List[str]) -> "JobRow":
@@ -288,6 +322,7 @@ class JobRow:
             resume_needed=values[COLUMNS["resume_needed"]],
             cover_letter_needed=values[COLUMNS["cover_letter_needed"]],
             notes=values[COLUMNS["notes"]],
+            last_email_time=values[COLUMNS["last_email_time"]],
         )
 
 
@@ -306,6 +341,8 @@ class SheetsClient:
         self._creds = None
         # Resolved lazily; the tab's numeric id can't change under a live client.
         self._jobs_sheet_id: Optional[int] = None
+        # Headers + number formats are a per-process concern; see ensure_headers().
+        self._schema_ensured: bool = False
 
     @property
     def _tab(self) -> str:
@@ -313,7 +350,7 @@ class SheetsClient:
         return "'" + self.config.jobs_sheet_tab.replace("'", "''") + "'"
 
     def _range(self, a1: str) -> str:
-        """Build an A1 range against the Jobs tab: "A2:U" -> "'Jobs'!A2:U"."""
+        """Build an A1 range against the Jobs tab: "A2:V" -> "'Jobs'!A2:V"."""
         return f"{self._tab}!{a1}"
 
     def _get_credentials(self) -> Credentials:
@@ -441,13 +478,10 @@ class SheetsClient:
         sheet_id = self.config.google_sheet_id
         jobs_sheet_id = self._get_jobs_sheet_id()
 
-        # Date-only columns (0-indexed):
-        # D=3 (job_posting_date), G=6 (oa_date), H=7 (phone_date),
-        # I=8 (tech_date), P=15 (deadline)
-        date_column_indices = [3, 6, 7, 8, 15]
-        # Date+time columns: F=5 (application_date), R=17 (added_date) — these store a
-        # real timestamp so the daily summary can window activity within the day.
-        datetime_column_indices = [5, 17]
+        # Date-only vs date+time columns, resolved from their names. The datetime ones
+        # store a real timestamp so the daily summary can window activity within the day.
+        date_column_indices = [COLUMNS[name] for name in DATE_COLUMNS]
+        datetime_column_indices = [COLUMNS[name] for name in DATETIME_COLUMNS]
 
         requests = []
         for col_idx in date_column_indices:
@@ -509,7 +543,7 @@ class SheetsClient:
                         "sheetId": jobs_sheet_id,
                         "startRowIndex": 0,
                         "startColumnIndex": 0,
-                        "endColumnIndex": 21
+                        "endColumnIndex": len(COLUMNS)
                     }
                 }
             }
@@ -524,7 +558,17 @@ class SheetsClient:
         self._retry_with_backoff(apply_formatting)
 
     def ensure_headers(self) -> None:
-        """Ensure the Jobs sheet has correct headers."""
+        """
+        Ensure the Jobs sheet has correct headers.
+
+        Costs 3 API calls even when nothing needs fixing, and the last of them is a
+        *write* — a full-column repeatCell across every date column plus a filter reset.
+        The layout cannot change under a live process, so do it once per client and let
+        both schedulers call it every cycle for free.
+        """
+        if self._schema_ensured:
+            return
+
         service = self._get_service()
         sheet_id = self.config.google_sheet_id
 
@@ -534,7 +578,7 @@ class SheetsClient:
         def check_headers():
             result = service.spreadsheets().values().get(
                 spreadsheetId=sheet_id,
-                range=self._range("A1:U1")
+                range=self._range(f"A1:{LAST_COL}1")
             ).execute()
             return result.get("values", [[]])[0]
 
@@ -550,7 +594,7 @@ class SheetsClient:
             def set_headers():
                 service.spreadsheets().values().update(
                     spreadsheetId=sheet_id,
-                    range=self._range("A1:U1"),
+                    range=self._range(f"A1:{LAST_COL}1"),
                     valueInputOption="RAW",
                     body={"values": [HEADERS]}
                 ).execute()
@@ -559,6 +603,9 @@ class SheetsClient:
 
         # Ensure date columns have proper formatting
         self._ensure_date_formatting()
+
+        # Only after everything succeeded — a transient failure must retry next run
+        self._schema_ensured = True
 
     def get_all_jobs(self) -> List[JobRow]:
         """
@@ -573,7 +620,7 @@ class SheetsClient:
         def fetch():
             result = service.spreadsheets().values().get(
                 spreadsheetId=sheet_id,
-                range=self._range("A2:U"),  # Skip header row
+                range=self._range(f"A2:{LAST_COL}"),  # Skip header row
                 valueRenderOption="FORMULA"  # Get formulas to parse hyperlinks
             ).execute()
             return result.get("values", [])
@@ -630,7 +677,7 @@ class SheetsClient:
         def append():
             result = service.spreadsheets().values().append(
                 spreadsheetId=sheet_id,
-                range=self._range("A:U"),
+                range=self._range(f"A:{LAST_COL}"),
                 valueInputOption="USER_ENTERED",  # Parse formulas
                 insertDataOption="INSERT_ROWS",
                 body={"values": [row]}
@@ -656,7 +703,16 @@ class SheetsClient:
             try:
                 self.apply_status_color(row_num, row[COLUMNS["status"]])
             except Exception as e:
-                print(f"Warning: could not set row {row_num} color: {e}")
+                # Must reach the log file, not stdout: the append already succeeded so
+                # nothing retries, and the row keeps the inherited color forever. Under
+                # a background service a print() goes nowhere, making this
+                # indistinguishable from running stale pre-fix code.
+                logger.warning(f"Could not set row {row_num} color: {e}")
+        else:
+            logger.warning(
+                f"Could not parse a row number from {updated_range!r}; "
+                f"row not painted and may keep the row above's color"
+            )
 
         return row_num
 
@@ -676,8 +732,7 @@ class SheetsClient:
         for key, value in updates.items():
             if key in COLUMNS:
                 col_idx = COLUMNS[key]
-                col_letter = chr(ord("A") + col_idx)
-                range_str = self._range(f"{col_letter}{row_number}")
+                range_str = self._range(f"{col_letter(col_idx)}{row_number}")
                 data.append({
                     "range": range_str,
                     "values": [[str(value) if value is not None else ""]]
@@ -780,8 +835,7 @@ class SheetsClient:
         sheet_id = self.config.google_sheet_id
 
         # First get existing notes
-        col_letter = chr(ord("A") + COLUMNS["notes"])
-        range_str = self._range(f"{col_letter}{row_number}")
+        range_str = self._range(f"{col_letter(COLUMNS['notes'])}{row_number}")
 
         def get_notes():
             result = service.spreadsheets().values().get(
@@ -822,8 +876,7 @@ class SheetsClient:
         if column not in COLUMNS:
             return
 
-        col_letter = chr(ord("A") + COLUMNS[column])
-        range_str = self._range(f"{col_letter}{row_number}")
+        range_str = self._range(f"{col_letter(COLUMNS[column])}{row_number}")
 
         def get_existing():
             result = service.spreadsheets().values().get(

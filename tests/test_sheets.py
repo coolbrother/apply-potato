@@ -10,6 +10,7 @@ Usage:
     pytest tests/test_sheets.py::TestDateAlreadyRecorded -v
 """
 
+import logging
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -341,11 +342,14 @@ class TestEventDateColumns:
         row = _seed_job(mock_sheets_client)
         checker = _checker(checker_config, mock_sheets_client)
 
+        # Distinct arrival times: the second-round mail really does land later, and the
+        # staleness guard requires strictly-newer to touch the row again.
+        arrivals = [datetime(2026, 7, 23, 20, 28, 52), datetime(2026, 7, 30, 9, 4, 11)]
         for i, mentioned in enumerate(["2026-08-15", "2026-08-16"]):
             checker._update_job_status(
                 mock_sheets_client.get_all_jobs()[0],
                 _classification("oa", date_mentioned=mentioned),
-                _email(datetime(2026, 7, 23, 20, 28, 52), message_id=f"msg-{i}"),
+                _email(arrivals[i], message_id=f"msg-{i}"),
             )
 
         assert _cell(mock_sheets_client, row, "oa_date") == "08/15/2026; 08/16/2026"
@@ -522,6 +526,20 @@ class TestAppendedRowColor:
 
         assert client.add_job({"company": "Uber", "position": "SWE Intern"}) == 306
 
+    def test_color_failure_is_logged(self, client, caplog):
+        """
+        The row silently keeps the row above's color and nothing retries, so this has
+        to reach the log file. A print() goes nowhere under a background service,
+        which makes a failed paint indistinguishable from running stale code.
+        """
+        client._service.spreadsheets().batchUpdate.side_effect = RuntimeError("boom")
+
+        with caplog.at_level(logging.WARNING, logger="src.sheets"):
+            client.add_job({"company": "Uber", "position": "SWE Intern"})
+
+        assert [r.levelname for r in caplog.records] == ["WARNING"]
+        assert "row 306" in caplog.text and "boom" in caplog.text
+
     def test_unparseable_range_skips_coloring(self, client):
         """row_num == -1 means we don't know which row to paint; painting row 0 would
         recolor the header."""
@@ -529,6 +547,16 @@ class TestAppendedRowColor:
 
         assert client.add_job({"company": "Uber", "position": "SWE Intern"}) == -1
         assert self._color_requests(client) == []
+
+    def test_unparseable_range_is_logged(self, client, caplog):
+        """Failing closed is right, but doing it silently is not."""
+        client._service.spreadsheets().values().append().execute.return_value = {}
+
+        with caplog.at_level(logging.WARNING, logger="src.sheets"):
+            client.add_job({"company": "Uber", "position": "SWE Intern"})
+
+        assert [r.levelname for r in caplog.records] == ["WARNING"]
+        assert "row number" in caplog.text
 
 
 # =============================================================================
