@@ -26,7 +26,7 @@ from bs4 import BeautifulSoup
 from src.config import Config, UserProfile, DiscordConfig, AutoApplyConfig, GitHubRepo
 from src.github_parser import JobListing
 from src.gmail import EmailMessage
-from src.sheets import SheetsClient
+from src.sheets import SheetsClient, LAST_COL
 from tests.mocks.mock_sheets import MockSheetsClient
 
 # Project root for fixture paths
@@ -376,7 +376,7 @@ def clean_test_sheet(sheets_client):
     try:
         result = service.spreadsheets().values().get(
             spreadsheetId=sheet_id,
-            range=sheets_client._range("A:U")
+            range=sheets_client._range(f"A:{LAST_COL}")
         ).execute()
         row_count = len(result.get("values", []))
     except Exception:
