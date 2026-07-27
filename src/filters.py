@@ -447,21 +447,28 @@ def check_graduation_timeline(user_grad_date: Optional[str], job_timeline: Optio
                 return False, f"User graduates ({user_grad_date}) before minimum ({job_timeline})"
         return True, "Could not parse minimum graduation date"
 
-    # Pattern 3: "between X and Y" range requirement
+    # Pattern 3: range requirement. "between X and Y" is the explicit form, but postings also
+    # state a bare window ("Graduation Dates: November 2027 - August 2028") with no keyword at
+    # all. Reading the opening date of such a window as a deadline rejects everyone who
+    # graduates after it, which is most of the range the posting is actually inviting.
+    dates = re.findall(
+        r"((?:january|february|march|april|may|june|july|august|september|october|november|december"
+        r"|spring|summer|fall|winter)\s+\d{4})",
+        job_lower
+    )
+    has_range_separator = any(sep in job_lower for sep in ("between", " to ", "through", "-", "–", "—"))
+
+    if len(dates) >= 2 and has_range_separator:
+        bounds = [d for d in (_parse_graduation_date(text) for text in dates) if d is not None]
+        if len(bounds) >= 2:
+            # Sort rather than trust document order, so a reversed window still reads correctly
+            min_date, max_date = min(bounds), max(bounds)
+            if min_date <= user_date <= max_date:
+                return True, f"User graduates ({user_grad_date}) within range ({job_timeline})"
+            else:
+                return False, f"User graduates ({user_grad_date}) outside range ({job_timeline})"
+
     if "between" in job_lower:
-        # Extract all month+year dates from the range
-        dates = re.findall(
-            r"((?:january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{4})",
-            job_lower
-        )
-        if len(dates) >= 2:
-            min_date = _parse_graduation_date(dates[0])
-            max_date = _parse_graduation_date(dates[1])
-            if min_date and max_date:
-                if min_date <= user_date <= max_date:
-                    return True, f"User graduates ({user_grad_date}) within range"
-                else:
-                    return False, f"User graduates ({user_grad_date}) outside range ({job_timeline})"
         return True, "Could not parse graduation range"
 
     # Pattern 3.5: "Not graduating before X" - must graduate ON or AFTER X (minimum requirement)

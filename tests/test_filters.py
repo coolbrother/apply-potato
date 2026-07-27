@@ -175,6 +175,49 @@ class TestCheckGraduationTimeline:
         assert result == should_pass, f"Expected {should_pass}, got {result}. Reason: {reason}"
 
 
+class TestGraduationBareRangeFallback:
+    """
+    Text-fallback handling of a range stated without the word "between".
+
+    Campus postings often give a bare window ("Graduation Dates: November 2027 - August 2028").
+    The fallback used to require the literal "between", so a bare window fell through to the
+    default branch, which reads a timeline as a "graduate by" deadline and takes the first date
+    it finds. That turned the opening month of the window into a cutoff and rejected every
+    applicant graduating after it, i.e. most of the range the posting was inviting.
+
+    The structured path (graduation_window) normally shadows this, since the AI does return
+    the window for such postings. These cover the fallback for when it does not.
+    """
+
+    @pytest.mark.parametrize("user_grad,job_timeline,should_pass", [
+        # The reported case, en dash, applicant inside the window
+        ("May 2028", "Graduation Dates: November 2027 – August 2028", True),
+        # Same window written with an ascii hyphen and an em dash
+        ("May 2028", "Graduation Dates: November 2027 - August 2028", True),
+        ("May 2028", "Graduation Dates: November 2027 — August 2028", True),
+        # Other separators that introduce a range without saying "between"
+        ("May 2028", "Graduation Dates: November 2027 to August 2028", True),
+        ("May 2028", "Graduation dates November 2027 through August 2028", True),
+        # Both ends of a bare window are still enforced
+        ("October 2027", "Graduation Dates: November 2027 – August 2028", False),
+        ("December 2028", "Graduation Dates: November 2027 – August 2028", False),
+        # Bounds are sorted, so a window written backwards still reads correctly
+        ("May 2028", "Graduation Dates: August 2028 – November 2027", True),
+        # Season-year bounds, not just month-year
+        ("May 2028", "Graduating Fall 2027 - Summer 2028", True),
+        # A single date is not a range: the deadline reading must survive
+        ("May 2028", "Must graduate by December 2028", True),
+        ("May 2028", "Must graduate by December 2027", False),
+        # Patterns that run before the range check keep priority
+        ("May 2028", "Graduation date December 2027 or later", True),
+        ("May 2028", "Must be currently enrolled during Fall 2027", True),
+        ("May 2028", "Not graduating before May 2027", True),
+    ])
+    def test_bare_range(self, user_grad, job_timeline, should_pass):
+        result, reason = check_graduation_timeline(user_grad, job_timeline)
+        assert result == should_pass, f"Expected {should_pass}, got {result}. Reason: {reason}"
+
+
 class TestCheckSeasonYear:
     """Test season/year filter."""
 
