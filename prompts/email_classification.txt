@@ -13,7 +13,10 @@ Classify the email into one of these categories:
 - "technical": Technical interview invitation (onsite, virtual, coding round)
 - "offer": Job offer
 - "rejection": Application rejected
-- "unknown": Cannot determine or not job-related
+- "unknown": Cannot determine, or none of the above fits. Mail that concerns a role
+  but reports no change of stage — a candidate portal invitation, a profile to
+  complete, an info session, a recruiter check-in — belongs here. Do NOT stretch a
+  stage category to cover it; the caller decides what to do with "unknown".
 
 Extract the following fields:
 
@@ -25,7 +28,8 @@ Extract the following fields:
     "date_mentioned": "YYYY-MM-DD if a specific date is mentioned (interview date, deadline, etc.)",
     "time_mentioned": "HH:MM if a specific time is mentioned",
     "action_required": "Brief description of any action needed by the recipient",
-    "key_details": "Any other important details (interviewer names, platform links, etc.)"
+    "key_details": "Any other important details (interviewer names, platform links, etc.)",
+    "note": "Short label describing what this email is, <=60 chars, e.g. 'Invite to Candidate Portal'"
 }
 
 CLASSIFICATION GUIDELINES:
@@ -38,6 +42,15 @@ confirmation:
 oa:
 - Subject contains: "assessment", "coding challenge", "HackerRank", "CodeSignal"
 - Body contains link to assessment platform
+- KEY RULE: "oa" requires something to COMPLETE — a test, assessment, or coding
+  challenge the candidate is being asked to take, usually with a deadline. A link
+  alone is not enough. Being given access to a site is not an assessment.
+- A candidate portal, applicant account, or profile page is NOT an assessment
+  platform, however it is worded. This is NOT an "oa":
+    "IMC has invited you to the Software Engineer Internship Candidate Portal ...
+     It's packed with helpful resources to help you learn and prepare"
+  Nothing there asks the candidate to complete anything, so no stage has changed.
+  It is "unknown".
 - Usually has a deadline mentioned
 
 phone:
@@ -62,13 +75,25 @@ rejection:
 
 COMPANY NAME EXTRACTION (CRITICAL):
 - Return ALL company names found in the email as an array (company_candidates)
+- These are LOOKUP KEYS, not a display name. They are matched against a spreadsheet
+  whose company column was written from the job posting, which may name the company
+  differently than the email does. Every extra correct variant is another chance to
+  match; a missing variant means the email is dropped. When unsure, include it.
 - You MUST check ALL of these sources and include EVERY company name found:
   1. Email signature/closing - CHECK THIS FIRST (e.g., "The [Company] Team", "[Company] HR")
   2. Body text (e.g., "Thank you for applying to [Company]", "career at [Company]")
   3. Subject line
+  4. The sender's email domain (e.g., campusus@imc.com -> "IMC"), unless it is an ATS
 - Include BOTH parent companies AND subsidiaries/divisions if different names appear
-- Normalize names (e.g., "Google LLC" → "Google", "Meta Platforms" → "Meta")
-- Do NOT include ATS platforms (Greenhouse, Lever, Jobvite, Workday)
+- KEY RULE: do NOT collapse variants down to one name. When a name carries a trailing
+  descriptor - a legal suffix (LLC, Inc, Corp, Ltd) or a line-of-business word
+  (Trading, Capital, Group, Partners, Technologies, Labs) - return BOTH the full name
+  AND the bare brand name, as separate entries:
+    - "Google LLC"      -> ["Google LLC", "Google"]
+    - "IMC Trading"     -> ["IMC Trading", "IMC"]
+    - "Meta Platforms"  -> ["Meta Platforms", "Meta"]
+  The spreadsheet often stores the bare brand, so omitting it loses the match.
+- Do NOT include ATS platforms (Greenhouse, Lever, Jobvite, Workday, candidate.fyi)
 - If multiple company names refer to the same org, include ALL of them
 
 DATE EXTRACTION:

@@ -1,0 +1,69 @@
+You are matching a job-application status email to the row it belongs to in an
+application tracker.
+
+The tracker's rows were written from job postings; the email was written by a
+company's recruiting system. The SAME role is routinely worded differently in the
+two places. Judge whether the candidate row and the email refer to the same role,
+not whether their text matches.
+
+Compare a candidate to the email on three things ONLY: discipline, level, and
+season/year. If those three agree, it is the same role, however differently the two
+titles are written.
+
+WORKED EXAMPLE - this exact pair is the SAME ROLE, and must go in same_role_rows:
+    email:     "Software Engineer Internship - Summer 2027"
+    candidate: "Software Engineer Intern - Summer 2027"
+  discipline Software Engineer = Software Engineer, level intern = intern,
+  season Summer 2027 = Summer 2027. "Internship" and "Intern" are the same word
+  here. Never reject a candidate because one says Intern and the other Internship.
+
+Wording differences that do NOT rule out a match:
+- "Intern" / "Internship" / "Intern Program"
+- "Engineer" / "Engineering" ("Software Engineer" = "Software Engineering")
+- "Developer" / "Development", "Co-op" / "Coop" / "Cooperative"
+- Extra or missing season, year, location, team, or requisition text
+- Punctuation, capitalization, dashes, and ordering
+
+Differences that DO rule out a match:
+- A different discipline: Software vs Hardware vs Quantitative vs Machine Learning
+  vs Data vs Trading vs Research are DIFFERENT roles, even at the same company
+- A different level: Intern vs Full-Time vs New Grad vs PhD vs Graduate
+- A different season or year when both are stated and they disagree
+  (Summer 2027 does not match Summer 2026)
+
+KEY RULE: return null unless exactly one candidate is clearly the role the email is
+about. Returning null is CORRECT and costs nothing - the email is set aside for the
+user to resolve by hand. Guessing a row writes a wrong status into the tracker,
+which is worse than not matching at all. Specifically return null when:
+- Two or more candidates are equally plausible, including exact duplicate rows
+- The email names no role specific enough to tell the candidates apart
+- The best candidate is only a partial or uncertain fit
+
+HOW TO ANSWER: work through the candidate list one row at a time, in the order given,
+and decide for EACH row whether it names the same role as the email. Put every row
+you judge to be the same role into "same_role_rows". Do this before choosing, and do
+not stop early: the matching row is often the last one in the list, and a run of
+non-matching rows above it means nothing.
+
+Then set "row":
+- exactly one entry in same_role_rows  -> that row number
+- zero, or more than one               -> null
+
+Return ONLY a JSON object, no other text:
+
+{
+    "same_role_rows": [<every candidate row naming the same role, may be empty>],
+    "row": <the single matching row number, or null>,
+    "confidence": <0.0 to 1.0>,
+    "reason": "<one short sentence naming what decided it>"
+}
+
+CANDIDATE ROWS:
+{candidates}
+
+EMAIL:
+Subject: {subject}
+From: {sender}
+Date: {date}
+
+{body}

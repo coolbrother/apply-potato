@@ -40,7 +40,12 @@ import httpx
 
 from src.config import get_config
 from src.logging_config import setup_logging, get_logger
-from src.needs_review import REASON_LABELS, load_needs_review
+from src.needs_review import (
+    REASON_DUPLICATE_ROWS,
+    REASON_LABELS,
+    REASON_UNCATEGORIZED,
+    load_needs_review,
+)
 from src.sheets import (
     get_sheets_client,
     parse_sheet_datetime, 
@@ -48,6 +53,11 @@ from src.sheets import (
     STATUS_APPLIED, STATUS_GHOSTED, STATUS_NEW, STATUS_OA, STATUS_OFFER,
     STATUS_PHONE, STATUS_REJECTED, STATUS_TECHNICAL,
 )
+
+
+# Detail lines listed under each review reason before collapsing into a "+N more".
+# Discord caps a message at 2000 characters, so this stays small.
+MAX_REVIEW_DETAIL = 4
 
 
 def _parse_dt(value) -> datetime | None:
@@ -265,10 +275,12 @@ def main() -> None:
     # These were marked processed and will not come back on their own — the summary
     # is the only place they surface.
     review_counts: dict[str, int] = {}
+    review_entries: dict[str, list[dict]] = {}
     for entry in load_needs_review(Path(__file__).parent.parent / "data"):
         if in_window(_parse_dt(entry.get("timestamp"))):
             reason = entry.get("reason", "other")
             review_counts[reason] = review_counts.get(reason, 0) + 1
+            review_entries.setdefault(reason, []).append(entry)
 
     total_review = sum(review_counts.values())
 
@@ -296,8 +308,47 @@ def main() -> None:
         if count > 0
     )
 
+    # A bare count per reason is not actionable: it says four emails went unmatched
+    # without saying which applications they were about. Name each one, since the
+    # whole point of the line is to send the user somewhere.
+    def _review_detail(entry: dict) -> str:
+        company = (entry.get("company") or "").strip()
+        candidates = entry.get("candidates") or []
+        rows = ", ".join(str(c.get("row")) for c in candidates if c.get("row"))
+
+        if entry.get("reason") == REASON_DUPLICATE_ROWS and candidates:
+            # The row numbers ARE the fix here: mark_canonical.py takes one.
+            position = (candidates[0].get("position") or "").strip()
+            return f"{company} · {position} · rows {rows}"
+
+        if entry.get("reason") == REASON_UNCATEGORIZED and candidates:
+            # The row was tinted, but a tint is unfindable among thousands of rows,
+            # so lead with the row number and say what the mail actually was.
+            c = candidates[0]
+            position = (c.get("position") or "").strip()
+            note = (c.get("note") or "").strip()
+            return f"row {c.get('row')} · {company} · {position} · {note}"
+
+        subject = (entry.get("subject") or "").strip()
+        if len(subject) > 55:
+            subject = subject[:54] + "…"
+        if company and candidates:
+            return f"{company} · {len(candidates)} rows · {subject}"
+        if company:
+            return f"{company} · {subject}"
+        return subject or "(no subject)"
+
+    def _review_block(reason: str, count: int) -> str:
+        head = f"\n     ↳ {REASON_LABELS.get(reason, reason)}: {count}"
+        entries = review_entries.get(reason, [])
+        shown = entries[:MAX_REVIEW_DETAIL]
+        body = "".join(f"\n          • {_review_detail(e)}" for e in shown)
+        if len(entries) > len(shown):
+            body += f"\n          • +{len(entries) - len(shown)} more"
+        return head + body
+
     review_lines = "".join(
-        f"\n     ↳ {REASON_LABELS.get(reason, reason)}: {count}"
+        _review_block(reason, count)
         for reason, count in sorted(review_counts.items())
         if count > 0
     )

@@ -36,7 +36,9 @@ from src.email_classifier import EmailClassifier, get_classifier, EmailClassific
 from src.needs_review import (
     REASON_ALL_RETIRED,
     REASON_AMBIGUOUS,
+    REASON_DUPLICATE_ROWS,
     REASON_NO_COMPANY,
+    REASON_UNCATEGORIZED,
     REASON_UNTRACKED,
     record_needs_review,
 )
@@ -67,6 +69,10 @@ CATEGORY_TO_DATE_COLUMN = {
     "technical": "tech_date",
 }
 
+# Statuses meaning the application is live. Uncategorized mail is only flagged on
+# these: mail arriving before you applied is recruiter noise, not a signal.
+POST_APPLIED_STATUSES = {"Applied", "OA", "Phone", "Technical", "Offer"}
+
 
 @dataclass
 class MatchOutcome:
@@ -81,6 +87,11 @@ class MatchOutcome:
     reason: str = ""                              # blank when job is not None
     company: str = ""                             # candidate the reason is about
     candidates: List[JobRow] = field(default_factory=list)
+
+    # Set only on a successful match that the AI picked out of exact duplicate rows.
+    # The status still gets written; these are logged so the digest can tell the user
+    # the twins exist and mark_canonical.py should collapse them.
+    duplicates: List[JobRow] = field(default_factory=list)
 
     @property
     def matched(self) -> bool:
@@ -122,11 +133,17 @@ class GmailChecker:
             "updated": 0,
             "no_match": 0,
             "ambiguous": 0,
+            "duplicate_rows": 0,
+            "uncategorized": 0,
             "unknown_category": 0,
             "stale_skipped": 0,
         }
 
-    def _find_matching_job(self, classification: EmailClassification) -> MatchOutcome:
+    def _find_matching_job(
+        self,
+        classification: EmailClassification,
+        email: Optional[EmailMessage] = None,
+    ) -> MatchOutcome:
         """
         Find a matching job in Sheets by trying all company candidates.
 
@@ -135,8 +152,15 @@ class GmailChecker:
         then the remaining candidates are still tried, since a later candidate may
         resolve to exactly one row.
 
+        Text lookup is containment matching, which cannot see that "Software Engineer
+        Internship" and "Software Engineer Intern" are one role. When every candidate
+        has been tried and only a tie remains, the AI is asked to pick from the tied
+        rows; it answers null unless one is clearly right.
+
         Args:
             classification: Email classification with company candidates and position
+            email: The email itself, needed to ask the AI to break a tie. Without it
+                the tie is reported unresolved, exactly as before.
 
         Returns:
             A MatchOutcome: the row when exactly one candidate resolved, otherwise
@@ -201,6 +225,35 @@ class GmailChecker:
         # No match found with any candidate
         logger.info(f"No matching job found for companies: {classification.company_candidates}")
         if tie:
+            # Text lookup could not single out a row, which usually means the tracker and
+            # the email word the same role differently ("Software Engineer Intern" vs
+            # "Software Engineer Internship"). Deciding whether two titles name the same
+            # role is language interpretation, so ask the AI rather than score the strings.
+            # It is told to answer null unless one row is clearly right, and a row it did
+            # not offer is rejected, so the worst case is the review flag we already had.
+            if email is not None and tie.candidates:
+                chosen = self.classifier.choose_job_row(
+                    email,
+                    [
+                        {"row": job.row_number, "company": job.company, "position": job.position}
+                        for job in tie.candidates
+                    ],
+                )
+                if chosen is not None:
+                    for job in tie.candidates:
+                        if job.row_number == chosen:
+                            # If the rows it chose between were the same posting scraped
+                            # twice, the pick was arbitrary between twins. Report them so
+                            # the digest can say so; exact equality, not a similarity call.
+                            key = (job.company.strip().lower(), job.position.strip().lower())
+                            twins = [
+                                other for other in tie.candidates
+                                if (other.company.strip().lower(),
+                                    other.position.strip().lower()) == key
+                            ]
+                            return MatchOutcome(
+                                job=job, duplicates=twins if len(twins) > 1 else []
+                            )
             return tie
         return MatchOutcome(
             reason=REASON_ALL_RETIRED if retired_only else REASON_UNTRACKED,
@@ -319,6 +372,76 @@ class GmailChecker:
                 f"Unparseable date_mentioned {mentioned!r}; falling back to email date"
             )
         return self._local_naive(email.date).strftime("%m/%d/%Y")
+
+    def _record_uncategorized(
+        self,
+        job: JobRow,
+        classification: EmailClassification,
+        email: EmailMessage,
+    ) -> bool:
+        """
+        Note an "unknown" email that matched a job already applied to.
+
+        These fit no stage — portal invites, profile setups, event invites — so they
+        write no status and no date. Instead the row gets a short note, is tinted with
+        the Info color, and is logged for the digest. The tint alone is useless across
+        thousands of rows, so the 9am/5pm digest is where these actually get found.
+
+        Rows still sitting at New are skipped: unsolicited mail before an application
+        is recruiter noise, not something to flag.
+        """
+        if job.status not in POST_APPLIED_STATUSES:
+            logger.debug(
+                f"Row {job.row_number} is {job.status or 'blank'}; "
+                f"not flagging uncategorized mail on an unapplied job"
+            )
+            return False
+
+        if not self._is_newer_than_last_email(job, email):
+            logger.info(
+                f"Stale email for row {job.row_number} ({job.company}); "
+                f"last recorded {job.last_email_time}, skipping"
+            )
+            self.stats["stale_skipped"] += 1
+            return False
+
+        note = (classification.note or classification.action_required or email.subject or "").strip()
+        note = note[:60]
+
+        self.sheets_client.update_job(
+            job.row_number,
+            {"last_email_time": self._local_naive(email.date).strftime("%m/%d/%Y %H:%M:%S")},
+        )
+        if note:
+            self.sheets_client.append_to_notes(job.row_number, note)
+
+        info_color = self.config.status_colors.get("Info")
+        if info_color:
+            self.sheets_client.set_row_color(job.row_number, info_color)
+
+        logger.info(
+            f"Uncategorized mail on row {job.row_number} ({job.company}) -> "
+            f"note {note!r}, no status change"
+        )
+        self.stats["uncategorized"] += 1
+
+        record_needs_review(
+            self.config.data_dir,
+            message_id=email.message_id,
+            reason=REASON_UNCATEGORIZED,
+            account=email.account,
+            sender=email.sender_email,
+            subject=email.subject,
+            category=classification.category,
+            company=job.company,
+            candidates=[{
+                "row": job.row_number,
+                "position": job.position,
+                "status": job.status,
+                "note": note,
+            }],
+        )
+        return True
 
     def _update_job_status(
         self,
@@ -452,15 +575,28 @@ class GmailChecker:
         self.stats["classified"] += 1
         logger.info(f"AI extracted - Category: {classification.category}, Companies: {classification.company_candidates}, Position: {classification.position}")
 
-        # Skip unknown category
+        # "unknown" is everything that fits no stage: candidate portal invites, profile
+        # setups, event invites — and outright junk. It never writes a status. It is
+        # still worth trying to match, because one that lands on a job already applied
+        # to is real correspondence about that application and belongs in its Notes.
+        # Requiring a company candidate keeps newsletters out of the lookup entirely.
         if classification.category == "unknown":
-            logger.debug("Unknown category, skipping")
             self.stats["unknown_category"] += 1
+            if classification.company_candidates:
+                outcome = self._find_matching_job(classification, email)
+                if outcome.matched:
+                    # Self-guards on status: a row still at New gets nothing, since mail
+                    # arriving before you applied is recruiter noise rather than a signal.
+                    self._record_uncategorized(outcome.job, classification, email)
+                else:
+                    logger.debug("Unknown category, matched no row; nothing to note")
+            else:
+                logger.debug("Unknown category with no company candidate, skipping")
             client.mark_as_processed(email.message_id)
             return False
 
         # Find matching job
-        outcome = self._find_matching_job(classification)
+        outcome = self._find_matching_job(classification, email)
         if not outcome.matched:
             self.stats["no_match"] += 1
             if outcome.reason == REASON_AMBIGUOUS:
@@ -473,6 +609,24 @@ class GmailChecker:
 
         self.stats["matched"] += 1
         logger.debug(f"Matched to: {job.company} - {job.position} (row {job.row_number})")
+
+        # Matched, but out of rows that are copies of each other. The status below is
+        # written normally; this only records that the twins exist, so the 9am/5pm
+        # digest can surface them and mark_canonical.py can collapse them.
+        if outcome.duplicates:
+            rows = ", ".join(str(d.row_number) for d in outcome.duplicates)
+            logger.info(f"  Row {job.row_number} is one of {len(outcome.duplicates)} duplicate rows: {rows}")
+            self.stats["duplicate_rows"] += 1
+            self._log_needs_review(
+                client,
+                email,
+                classification,
+                MatchOutcome(
+                    reason=REASON_DUPLICATE_ROWS,
+                    company=job.company,
+                    candidates=outcome.duplicates,
+                ),
+            )
 
         # Update job status
         updated = self._update_job_status(job, classification, email)

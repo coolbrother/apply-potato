@@ -38,11 +38,26 @@ REASON_NO_COMPANY = "no_company"
 # them means either the wrong row was retired or a new posting was never scraped.
 REASON_ALL_RETIRED = "all_retired"
 
+# The email WAS matched and its status written, but the rows it chose between were
+# exact duplicates of one another - the same posting scraped more than once. Logged
+# so the duplicates surface in the digest, since the status landed on an arbitrary
+# one of the twins and scripts/mark_canonical.py is what collapses them. Unlike the
+# reasons above, this one is informational: no email was dropped.
+REASON_DUPLICATE_ROWS = "duplicate_rows"
+
+# The email WAS matched to an applied job, but fits no stage category - a candidate
+# portal invite, a profile setup, a "still reviewing" nudge. No status is written and
+# the row is tinted instead, but a tint is invisible across thousands of rows, so the
+# digest is where it actually gets found. Informational: nothing was dropped.
+REASON_UNCATEGORIZED = "uncategorized"
+
 REASON_LABELS = {
     REASON_AMBIGUOUS: "Ambiguous match",
     REASON_UNTRACKED: "Company not tracked",
     REASON_NO_COMPANY: "No company found",
     REASON_ALL_RETIRED: "All rows struck through",
+    REASON_DUPLICATE_ROWS: "Matched across duplicate rows (run mark_canonical.py)",
+    REASON_UNCATEGORIZED: "Mail on an applied job, no stage change",
 }
 
 

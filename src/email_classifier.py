@@ -8,7 +8,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
 from bs4 import BeautifulSoup
 from openai import OpenAI, APIError, RateLimitError, APITimeoutError
@@ -34,6 +34,7 @@ class EmailClassification:
     time_mentioned: Optional[str] = None
     action_required: Optional[str] = None
     key_details: Optional[str] = None
+    note: Optional[str] = None  # short label for the sheet's Notes column
 
 
 class EmailClassifier:
@@ -52,6 +53,7 @@ class EmailClassifier:
         """
         self.config = config or get_config()
         self._prompt_template: Optional[str] = None
+        self._row_match_prompt: Optional[str] = None
         self._openai_client: Optional[OpenAI] = None
         self._gemini_client = None
 
@@ -164,7 +166,7 @@ class EmailClassifier:
 
         return result
 
-    def _classify_openai(self, prompt: str) -> Optional[str]:
+    def _classify_openai(self, prompt: str, max_tokens: int = 500) -> Optional[str]:
         """Call OpenAI API to classify email."""
         client = self._get_openai_client()
 
@@ -175,7 +177,7 @@ class EmailClassifier:
             model=self.config.openai_model,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.1,  # Low temperature for consistent classification
-            max_tokens=500,
+            max_tokens=max_tokens,
         )
 
         elapsed = time.time() - start_time
@@ -186,7 +188,7 @@ class EmailClassifier:
 
         return None
 
-    def _classify_gemini(self, prompt: str) -> Optional[str]:
+    def _classify_gemini(self, prompt: str, max_tokens: int = 500) -> Optional[str]:
         """Call Gemini API to classify email."""
         client = self._get_gemini_client()
 
@@ -198,7 +200,7 @@ class EmailClassifier:
             contents=prompt,
             config=genai_types.GenerateContentConfig(
                 temperature=0.1,
-                max_output_tokens=500,
+                max_output_tokens=max_tokens,
             )
         )
 
@@ -280,7 +282,107 @@ class EmailClassifier:
             time_mentioned=data.get("time_mentioned"),
             action_required=data.get("action_required"),
             key_details=data.get("key_details"),
+            note=data.get("note"),
         )
+
+    @property
+    def row_match_prompt_template(self) -> str:
+        """Load and cache the row-disambiguation prompt template."""
+        if self._row_match_prompt is None:
+            prompt_path = self.config.prompts_dir / "job_row_match.txt"
+            if not prompt_path.exists():
+                raise FileNotFoundError(f"Prompt template not found: {prompt_path}")
+            self._row_match_prompt = prompt_path.read_text(encoding="utf-8")
+        return self._row_match_prompt
+
+    def choose_job_row(
+        self, email: EmailMessage, candidates: List[Dict[str, Any]]
+    ) -> Optional[int]:
+        """
+        Ask the AI which tracker row a status email belongs to.
+
+        Called only when text lookup has already failed to single out a row, because
+        the tracker and the email word the same role differently ("Software Engineer
+        Intern" vs "Software Engineer Internship"). Deciding that is language
+        interpretation, so the AI does it rather than a similarity heuristic.
+
+        Args:
+            email: The status email being matched.
+            candidates: Rows to choose between, each with "row", "company", "position".
+
+        Returns:
+            The chosen row number, or None when the AI declines to choose or the
+            call fails. None is a normal outcome: the caller then flags the email
+            for review, which is what it would have done anyway.
+        """
+        if not candidates:
+            return None
+
+        body = email.body_text
+        if not body and email.body_html:
+            soup = BeautifulSoup(email.body_html, "html.parser")
+            for element in soup(["script", "style"]):
+                element.decompose()
+            body = soup.get_text(separator="\n", strip=True)
+
+        listing = "\n".join(
+            f"- row {c['row']}: {c.get('company', '')} | {c.get('position', '')}"
+            for c in candidates
+        )
+        prompt = (
+            self.row_match_prompt_template
+            .replace("{candidates}", listing)
+            .replace("{subject}", email.subject or "")
+            .replace("{sender}", f"{email.sender} <{email.sender_email}>")
+            .replace("{date}", email.date.strftime("%Y-%m-%d %H:%M"))
+            .replace("{body}", body or "")
+        )
+
+        valid_rows = {c["row"] for c in candidates}
+        try:
+            # Enumerating a verdict per candidate needs more room than a classification.
+            if self.config.ai_provider == "openai":
+                raw = self._classify_openai(prompt, max_tokens=900)
+            else:
+                raw = self._classify_gemini(prompt, max_tokens=900)
+        except Exception as e:
+            # Never fatal: the caller falls back to flagging the email for review.
+            logger.warning(f"Row disambiguation call failed: {e}")
+            return None
+
+        if not raw:
+            return None
+
+        match = re.search(r"\{.*\}", raw, re.DOTALL)
+        if not match:
+            logger.warning("Row disambiguation returned no JSON object")
+            return None
+
+        try:
+            data = json.loads(match.group(0))
+        except json.JSONDecodeError:
+            logger.warning("Row disambiguation returned unparseable JSON")
+            return None
+
+        row = data.get("row")
+        if row is None:
+            logger.info(f"AI declined to choose a row: {data.get('reason', 'no reason given')}")
+            return None
+
+        try:
+            row = int(row)
+        except (TypeError, ValueError):
+            logger.warning(f"Row disambiguation returned a non-numeric row: {row!r}")
+            return None
+
+        # Only trust a row that was actually offered, so a hallucinated number
+        # cannot write a status onto an unrelated application.
+        if row not in valid_rows:
+            logger.warning(f"Row disambiguation returned row {row}, which was not a candidate")
+            return None
+
+        logger.info(f"AI matched row {row}: {data.get('reason', '')}")
+        return row
 
 
 # Singleton instance
