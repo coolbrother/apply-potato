@@ -87,6 +87,19 @@ class_standing_requirement:
 - Do NOT put major/degree info here (goes in required_majors instead)
 - If no year-level or enrollment requirement mentioned, use null
 
+- WHICH SENTENCE to copy, when the posting has several. Pick the one that says WHO MAY
+  APPLY — the sentence naming a year level, an enrollment status, or a degree level.
+  A line labelled "Eligibility:" is almost always that sentence.
+  - PREFER: "Eligibility: Current Bachelor's, Master's, or PhD students pursuing degrees
+    in rigorous, highly technical fields"
+  - NOT: "Excellent academic background from a rigorous computer science or engineering
+    program graduating in Fall 2027 or later" — this describes academic QUALITY and a
+    GRADUATION DATE, not who may apply. The graduation date belongs in
+    graduation_timeline; nothing in it belongs here.
+  - A sentence about grades, rigor, or "strong background" is never a class standing.
+  - If one sentence states who may apply and another states when they graduate, this
+    field takes the FIRST and graduation_timeline takes the second.
+
 class_standing_range:
 - This is the NORMALIZED version of class_standing_requirement. Keep class_standing_requirement
   as the exact original text; put your interpretation here.
@@ -116,12 +129,32 @@ class_standing_range:
       internship must be the last requirement for you to graduate" → minimum: "Freshman",
       maximum: null (this requires being a student; it sets NO year level)
 
+- KEY RULE — a list of DEGREE LEVELS is not a list of year levels:
+  - There is no allowed value for "Bachelor's", because every undergraduate year
+    (Freshman..Senior) is a Bachelor's student. Encode "Bachelor's students are eligible"
+    as minimum: "Freshman".
+  - Such a list is an OR — a student qualifies by matching ANY member — so take the
+    minimum from the LEAST senior degree named, never the most senior.
+    - "Current Bachelor's, Master's, or PhD students" → minimum: "Freshman", maximum: null
+    - "open to undergraduate and graduate students" → minimum: "Freshman", maximum: null
+    - "Bachelor's or Master's students" → minimum: "Freshman", maximum: null
+  - Naming Master's or PhD alongside Bachelor's WIDENS eligibility; it never narrows it.
+    Returning minimum: "Graduate" for a list that includes Bachelor's is always WRONG —
+    it rejects the undergraduates the posting explicitly invited.
+  - The minimum rises only when NO undergraduate degree is named at all:
+    - "Master's or PhD students only" → minimum: "Graduate", maximum: "PhD"
+    - "must be enrolled in a PhD program" → minimum: "PhD", maximum: null
+
 - KEY RULE — "graduate" as a VERB is not a class standing:
   - Only the NOUN sense means the Graduate level: "graduate student", "graduate program",
     "graduate degree", "enrolled in graduate school" → "Graduate"
   - The VERB describes finishing a degree and says NOTHING about year level:
     "to graduate", "before you graduate", "the last requirement for you to graduate",
     "you will graduate in 2027" → do NOT set "Graduate" because of these
+  - This includes the -ing form paired with a date, which is a GRADUATION TIMELINE:
+    "graduating in Fall 2027 or later", "graduating in 2028", "graduating between May
+    2027 and June 2028" → do NOT set "Graduate"; if the posting says nothing else about
+    year level, class_standing_range is null/null and the date goes in graduation_timeline
   - "graduate students only" → minimum: "Graduate", maximum: "PhD"
 
 - KEY RULE — only set "maximum" when the posting genuinely EXCLUDES more senior students:
@@ -164,6 +197,11 @@ graduation_window:
     - "Must graduate by June 2026" → {"earliest": null, "latest": "2026-06"}
   - Floor language — "or later", "and later", "after", "no earlier than" — sets "earliest"
     - "Graduation date December 2027 or later" → {"earliest": "2027-12", "latest": null}
+    - The -ing form reads the same way. "or later" is floor language wherever it appears:
+      - "graduating in Fall 2027 or later" → {"earliest": "2027-12", "latest": null}
+      - "graduating in 2028 or beyond" → {"earliest": "2028-05", "latest": null}
+    - "or later" ALWAYS sets "earliest" and leaves "latest" null. Putting such a date in
+      "latest" inverts the requirement and rejects every student the posting invited.
   - A range sets both
     - "Must graduate between Dec 2025 and June 2026" → {"earliest": "2025-12", "latest": "2026-06"}
   - KEY RULE — a NEGATED "before" is a FLOOR, not a deadline. Read the whole phrase, not the

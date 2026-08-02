@@ -87,6 +87,21 @@ CLASS_STANDING_PATTERNS = [
     if standing not in AMBIGUOUS_STANDINGS
 ]
 
+# Phrases that make a graduation date a FLOOR ("graduate on or after X") rather than a
+# deadline. Deliberately narrower than the Pattern 2 keyword list below: a bare "after"
+# appears in unrelated prose ("after the internship"), and this set is used to overrule
+# the AI, so it must not fire on an ambiguous match.
+GRADUATION_FLOOR_PHRASES = (
+    "or later",
+    "and later",
+    "or beyond",
+    "and beyond",
+    "or after",
+    "no earlier than",
+    "onwards",
+    "onward",
+)
+
 # Academic-year shorthand: "2026/27" covers both 2026 and 2027.
 ACADEMIC_YEAR_PATTERN = re.compile(r"\b(\d{4})\s*[/-]\s*(\d{2})\b")
 
@@ -409,6 +424,24 @@ def check_graduation_timeline(user_grad_date: Optional[str], job_timeline: Optio
     if grad_window is not None:
         earliest = _parse_year_month(grad_window.earliest)
         latest = _parse_year_month(grad_window.latest)
+
+        # Repair an inverted window. "graduating in Fall 2027 or later" is a floor, but the
+        # AI intermittently files that date as "latest", which flips an open-ended minimum
+        # into a deadline and rejects exactly the students the posting invited. The verbatim
+        # timeline is quoted from the posting and is the more reliable of the two fields, so
+        # when it plainly says "or later" and the window offers only a ceiling, the window is
+        # contradicting its own source text: trust the text.
+        if (
+            latest is not None
+            and earliest is None
+            and job_timeline
+            and any(phrase in job_timeline.lower() for phrase in GRADUATION_FLOOR_PHRASES)
+        ):
+            logger.info(
+                f"Graduation window inverted: {job_timeline!r} is a floor, but the AI set "
+                f"latest={grad_window.latest!r} with no earliest. Reading it as earliest."
+            )
+            earliest, latest = latest, None
 
         if earliest is not None and user_date < earliest:
             return False, f"User graduates ({user_grad_date}) before earliest allowed ({grad_window.earliest})"

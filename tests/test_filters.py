@@ -407,6 +407,55 @@ class TestGraduationWindowStructured:
         assert result is True
 
 
+class TestInvertedGraduationWindow:
+    """
+    The AI intermittently files a floor date ("graduating in Fall 2027 or later") as
+    "latest", inverting an open-ended minimum into a deadline. When the verbatim timeline
+    says "or later" and the window offers only a ceiling, the window contradicts its own
+    source text and the text wins.
+    """
+
+    @pytest.mark.parametrize("timeline", [
+        "graduating in Fall 2027 or later",
+        "Graduating in Fall 2027 or later",       # capitalisation varies run to run
+        "graduation date December 2027 and later",
+        "graduating in 2028 or beyond",
+        "must graduate no earlier than May 2027",
+        "graduating May 2027 onwards",
+    ])
+    def test_floor_language_repairs_inverted_window(self, timeline):
+        """The PDT Partners case: user graduates after the floor, so the job qualifies."""
+        window = GraduationWindow(earliest=None, latest="2027-12")
+        result, reason = check_graduation_timeline("May 2028", timeline, window)
+        assert result is True, f"Expected pass for {timeline!r}. Reason: {reason}"
+
+    def test_repaired_floor_still_rejects_early_graduate(self):
+        """Repairing the bound must not make it toothless — it is still a floor."""
+        window = GraduationWindow(earliest=None, latest="2027-12")
+        result, _ = check_graduation_timeline("May 2026", "graduating in Fall 2027 or later", window)
+        assert result is False
+
+    @pytest.mark.parametrize("timeline", [
+        "Must graduate by June 2026",
+        "graduation must occur before June 2026",
+        "Graduation: May 2026",
+        None,
+    ])
+    def test_genuine_deadline_is_left_alone(self, timeline):
+        """No floor language means the ceiling is real and must still reject."""
+        window = GraduationWindow(earliest=None, latest="2026-06")
+        result, _ = check_graduation_timeline("May 2028", timeline, window)
+        assert result is False
+
+    def test_explicit_range_is_not_repaired(self):
+        """With an earliest already set the window is a range, not an inversion."""
+        window = GraduationWindow(earliest="2025-12", latest="2026-06")
+        result, _ = check_graduation_timeline(
+            "May 2028", "graduating between Dec 2025 and June 2026 or later", window
+        )
+        assert result is False
+
+
 class TestSeasonYearStructured:
     """Test the AI-normalized season/year, which enforces the season."""
 
