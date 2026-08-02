@@ -364,6 +364,60 @@ class TestProcessEmailFlagging:
         assert load_needs_review(data_dir) == []
         assert checker.stats["unknown_category"] == 1
 
+    def test_unknown_category_never_touches_a_row(self, checker_config, data_dir):
+        """
+        A newsletter naming a company you applied to must not write to that row.
+
+        This is the row 304 regression: "unknown" mail used to be matched against the
+        sheet and noted on any already-applied row, on the theory that a company
+        candidate implied real correspondence. A newsletter about Gemini Robotics yields
+        "Google", matched the applied Google row, and left four junk notes there.
+        """
+        sheets = MagicMock()
+        sheets.find_jobs_by_company_and_position.return_value = [
+            _row(304, "Google", "Software Engineering Intern", status="Applied")
+        ]
+        sheets.find_jobs_by_company.return_value = [
+            _row(304, "Google", "Software Engineering Intern", status="Applied")
+        ]
+
+        checker, client, updated = self._run(
+            checker_config,
+            sheets,
+            _classification(["Google"], "Software Engineering Intern", category="unknown"),
+        )
+
+        assert updated is False
+        assert checker.stats["unknown_category"] == 1
+        # The row is left completely alone: no note, no tint, no last_email_time bump.
+        sheets.append_to_notes.assert_not_called()
+        sheets.set_row_color.assert_not_called()
+        sheets.update_job.assert_not_called()
+        assert load_needs_review(data_dir) == []
+        client.mark_as_processed.assert_called_once_with("msg-1")
+
+    def test_confirmation_without_a_position_still_updates(self, checker_config, data_dir):
+        """
+        A real confirmation naming no position must still land.
+
+        The GoDaddy case: "Thank you for applying to Events/University Recruiting"
+        classifies as `confirmation` with no usable position, so it can only match on
+        company. Dropping the `unknown` path must not touch this — the gate there is the
+        category, not whether a position was extracted.
+        """
+        sheets = MagicMock()
+        sheets.find_jobs_by_company.return_value = [
+            _row(398, "GoDaddy", "Summer 2027 Software Development Engineers Intern")
+        ]
+
+        checker, client, updated = self._run(
+            checker_config, sheets, _classification(["GoDaddy"], position=None)
+        )
+
+        assert updated is True
+        assert checker.stats["matched"] == 1
+        assert load_needs_review(data_dir) == []
+
     def test_unwritable_log_does_not_break_the_run(self, checker_config, data_dir):
         sheets = MagicMock()
         sheets.find_jobs_by_company.return_value = [

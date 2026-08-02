@@ -38,7 +38,6 @@ from src.needs_review import (
     REASON_AMBIGUOUS,
     REASON_DUPLICATE_ROWS,
     REASON_NO_COMPANY,
-    REASON_UNCATEGORIZED,
     REASON_UNTRACKED,
     record_needs_review,
 )
@@ -68,11 +67,6 @@ CATEGORY_TO_DATE_COLUMN = {
     "phone": "phone_date",
     "technical": "tech_date",
 }
-
-# Statuses meaning the application is live. Uncategorized mail is only flagged on
-# these: mail arriving before you applied is recruiter noise, not a signal.
-POST_APPLIED_STATUSES = {"Applied", "OA", "Phone", "Technical", "Offer"}
-
 
 @dataclass
 class MatchOutcome:
@@ -134,7 +128,6 @@ class GmailChecker:
             "no_match": 0,
             "ambiguous": 0,
             "duplicate_rows": 0,
-            "uncategorized": 0,
             "unknown_category": 0,
             "stale_skipped": 0,
         }
@@ -373,76 +366,6 @@ class GmailChecker:
             )
         return self._local_naive(email.date).strftime("%m/%d/%Y")
 
-    def _record_uncategorized(
-        self,
-        job: JobRow,
-        classification: EmailClassification,
-        email: EmailMessage,
-    ) -> bool:
-        """
-        Note an "unknown" email that matched a job already applied to.
-
-        These fit no stage — portal invites, profile setups, event invites — so they
-        write no status and no date. Instead the row gets a short note, is tinted with
-        the Info color, and is logged for the digest. The tint alone is useless across
-        thousands of rows, so the 9am/5pm digest is where these actually get found.
-
-        Rows still sitting at New are skipped: unsolicited mail before an application
-        is recruiter noise, not something to flag.
-        """
-        if job.status not in POST_APPLIED_STATUSES:
-            logger.debug(
-                f"Row {job.row_number} is {job.status or 'blank'}; "
-                f"not flagging uncategorized mail on an unapplied job"
-            )
-            return False
-
-        if not self._is_newer_than_last_email(job, email):
-            logger.info(
-                f"Stale email for row {job.row_number} ({job.company}); "
-                f"last recorded {job.last_email_time}, skipping"
-            )
-            self.stats["stale_skipped"] += 1
-            return False
-
-        note = (classification.note or classification.action_required or email.subject or "").strip()
-        note = note[:60]
-
-        self.sheets_client.update_job(
-            job.row_number,
-            {"last_email_time": self._local_naive(email.date).strftime("%m/%d/%Y %H:%M:%S")},
-        )
-        if note:
-            self.sheets_client.append_to_notes(job.row_number, note)
-
-        info_color = self.config.status_colors.get("Info")
-        if info_color:
-            self.sheets_client.set_row_color(job.row_number, info_color)
-
-        logger.info(
-            f"Uncategorized mail on row {job.row_number} ({job.company}) -> "
-            f"note {note!r}, no status change"
-        )
-        self.stats["uncategorized"] += 1
-
-        record_needs_review(
-            self.config.data_dir,
-            message_id=email.message_id,
-            reason=REASON_UNCATEGORIZED,
-            account=email.account,
-            sender=email.sender_email,
-            subject=email.subject,
-            category=classification.category,
-            company=job.company,
-            candidates=[{
-                "row": job.row_number,
-                "position": job.position,
-                "status": job.status,
-                "note": note,
-            }],
-        )
-        return True
-
     def _update_job_status(
         self,
         job: JobRow,
@@ -576,22 +499,23 @@ class GmailChecker:
         logger.info(f"AI extracted - Category: {classification.category}, Companies: {classification.company_candidates}, Position: {classification.position}")
 
         # "unknown" is everything that fits no stage: candidate portal invites, profile
-        # setups, event invites — and outright junk. It never writes a status. It is
-        # still worth trying to match, because one that lands on a job already applied
-        # to is real correspondence about that application and belongs in its Notes.
-        # Requiring a company candidate keeps newsletters out of the lookup entirely.
+        # setups, event invites — and outright junk. It never writes a status, and as of
+        # 2026-08-02 it no longer writes anything else either.
+        #
+        # It used to match against the sheet and leave a note on any row already applied
+        # to, on the theory that a company candidate could only come from real
+        # correspondence. That theory was wrong: a newsletter about Gemini Robotics
+        # yields "Google", matches the applied Google row, and writes a note there. Row
+        # 304 collected four such notes, one of them ("Invitation to coffee chat with
+        # Jeff") invented from an AI newsletter — the row asserted something that never
+        # happened. Filtering bulk senders would have caught the newsletters but not a
+        # transactional "you shared data with myworkday.com" notice, so the matching is
+        # dropped altogether rather than guarded.
         if classification.category == "unknown":
             self.stats["unknown_category"] += 1
-            if classification.company_candidates:
-                outcome = self._find_matching_job(classification, email)
-                if outcome.matched:
-                    # Self-guards on status: a row still at New gets nothing, since mail
-                    # arriving before you applied is recruiter noise rather than a signal.
-                    self._record_uncategorized(outcome.job, classification, email)
-                else:
-                    logger.debug("Unknown category, matched no row; nothing to note")
-            else:
-                logger.debug("Unknown category with no company candidate, skipping")
+            logger.debug(
+                f"Unknown category from {email.sender_email}; not matched to any row"
+            )
             client.mark_as_processed(email.message_id)
             return False
 
