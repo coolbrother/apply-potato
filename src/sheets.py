@@ -696,18 +696,19 @@ class SheetsClient:
         except (IndexError, ValueError):
             row_num = -1
 
-        # INSERT_ROWS inherits the row above's formatting, so a job appended under a
-        # status-colored row comes out colored too. The row is written either way —
-        # a formatting failure must not read as a failed append.
+        # INSERT_ROWS inherits the row above's formatting — that is Sheets' behaviour for
+        # an appended row, not a choice this code makes, and values().append() offers no
+        # way to opt out. So the row is normalized right after it lands. The row is
+        # written either way: a formatting failure must not read as a failed append.
         if row_num > 0:
             try:
-                self.apply_status_color(row_num, row[COLUMNS["status"]])
+                self._normalize_appended_row(row_num, row[COLUMNS["status"]])
             except Exception as e:
                 # Must reach the log file, not stdout: the append already succeeded so
-                # nothing retries, and the row keeps the inherited color forever. Under
-                # a background service a print() goes nowhere, making this
+                # nothing retries, and the row keeps the inherited formatting forever.
+                # Under a background service a print() goes nowhere, making this
                 # indistinguishable from running stale pre-fix code.
-                logger.warning(f"Could not set row {row_num} color: {e}")
+                logger.warning(f"Could not normalize row {row_num} formatting: {e}")
         else:
             logger.warning(
                 f"Could not parse a row number from {updated_range!r}; "
@@ -995,6 +996,78 @@ class SheetsClient:
         color = self.config.status_colors.get(status)
         if color:
             self.set_row_color(row_number, color)
+
+    def _normalize_appended_row(self, row_number: int, status: str) -> None:
+        """
+        Undo the formatting an appended row inherited from the row above it.
+
+        Sheets copies the preceding row's format onto a row inserted by
+        values().append(insertDataOption="INSERT_ROWS"), and that call takes no
+        formatting argument, so the only options are to fix the row afterwards or to
+        abandon append for insertDimension(inheritFromBefore=False) plus a separate
+        write. This is the former.
+
+        Resetting only the properties known to be set elsewhere would repeat the bug
+        each time a new one is introduced: the colour was reset here, strikethrough was
+        not, so striking the bottom row of the sheet silently struck every job appended
+        after it — rows 420-462 — and the Gmail matcher skips struck rows, so those jobs
+        became invisible to status updates. Clearing the whole textFormat covers
+        strikethrough, bold, italic and underline together.
+
+        numberFormat is deliberately left alone: ensure_headers() sets date formats on
+        the event-date columns, and resetting those would break date parsing.
+
+        Both requests go in one batchUpdate — one round trip, and one failure mode for
+        the caller to log.
+        """
+        service = self._get_service()
+        sheet_id = self.config.google_sheet_id
+        jobs_sheet_id = self._get_jobs_sheet_id()
+
+        row_range = {
+            "sheetId": jobs_sheet_id,
+            "startRowIndex": row_number - 1,  # 0-indexed
+            "endRowIndex": row_number,
+            "startColumnIndex": 0,
+            "endColumnIndex": len(COLUMNS),
+        }
+
+        requests = [{
+            "repeatCell": {
+                "range": row_range,
+                "cell": {
+                    "userEnteredFormat": {
+                        "textFormat": {
+                            "strikethrough": False,
+                            "bold": False,
+                            "italic": False,
+                            "underline": False,
+                        }
+                    }
+                },
+                "fields": "userEnteredFormat.textFormat",
+            }
+        }]
+
+        color = self.config.status_colors.get(status)
+        if color:
+            requests.append({
+                "repeatCell": {
+                    "range": row_range,
+                    "cell": {
+                        "userEnteredFormat": {"backgroundColor": self._hex_to_rgb(color)}
+                    },
+                    "fields": "userEnteredFormat.backgroundColor",
+                }
+            })
+
+        def apply():
+            service.spreadsheets().batchUpdate(
+                spreadsheetId=sheet_id,
+                body={"requests": requests},
+            ).execute()
+
+        self._retry_with_backoff(apply)
 
     def set_row_strikethrough(self, row_number: int, struck: bool = True) -> None:
         """

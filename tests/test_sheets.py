@@ -558,6 +558,59 @@ class TestAppendedRowColor:
         assert [r.levelname for r in caplog.records] == ["WARNING"]
         assert "row number" in caplog.text
 
+    def _text_format_requests(self, client):
+        """Every textFormat payload sent while adding the row."""
+        found = []
+        for call in client._service.spreadsheets().batchUpdate.call_args_list:
+            for request in call.kwargs.get("body", {}).get("requests", []):
+                cell = request.get("repeatCell")
+                if not cell:
+                    continue
+                fmt = cell["cell"]["userEnteredFormat"]
+                if "textFormat" in fmt:
+                    found.append((cell["range"]["startRowIndex"] + 1, fmt["textFormat"]))
+        return found
+
+    def test_appended_row_is_not_struck_through(self, client):
+        """
+        Sheets copies the row above's format onto an appended row. When the bottom row
+        of the sheet is struck — which mark_canonical does whenever the retired
+        duplicate happens to be last — every job appended after it inherits the strike.
+        The Gmail matcher skips struck rows, so those jobs go invisible to status
+        updates. Rows 420-462 were lost exactly this way.
+        """
+        client.add_job({"company": "Uber", "position": "SWE Intern"})
+
+        resets = self._text_format_requests(client)
+        assert resets, "appended row must have its inherited textFormat cleared"
+        row, fmt = resets[0]
+        assert row == 306
+        assert fmt["strikethrough"] is False
+
+    def test_appended_row_clears_all_inherited_text_format(self, client):
+        """
+        Resetting only the properties known to be set elsewhere reintroduces this bug
+        the next time a new one appears — colour was reset here and strikethrough was
+        not, which is how 420-462 happened. The whole textFormat goes.
+        """
+        client.add_job({"company": "Uber", "position": "SWE Intern"})
+
+        _, fmt = self._text_format_requests(client)[0]
+        assert fmt == {
+            "strikethrough": False, "bold": False, "italic": False, "underline": False,
+        }
+
+        masks = [
+            r["repeatCell"]["fields"]
+            for call in client._service.spreadsheets().batchUpdate.call_args_list
+            for r in call.kwargs.get("body", {}).get("requests", [])
+            if "repeatCell" in r
+        ]
+        assert "userEnteredFormat.textFormat" in masks
+        # numberFormat must survive: ensure_headers sets date formats on the event-date
+        # columns, and clearing those would break date parsing.
+        assert not any("numberFormat" in m for m in masks)
+
 
 # =============================================================================
 # Jobs tab name + gid resolution
