@@ -276,6 +276,99 @@ class TestStaleGuard:
 
         notify.assert_not_called()
 
+    def test_newer_confirmation_cannot_undo_an_oa(self, checker_config):
+        """
+        The row 404 regression. Castleton's assessment vendor and its ATS mailed three
+        seconds apart, the "Thank You for Applying" second, so the confirmation was
+        genuinely the newer message and sailed past the stale guard — resetting a row
+        that had just reached OA back to Applied.
+
+        The email is still recorded (its stamp advances); only the backwards status
+        move is refused.
+        """
+        sheets = MockSheetsClient()
+        row = _seed_job(sheets)
+        checker = _checker(checker_config, sheets)
+
+        checker._update_job_status(
+            sheets.get_all_jobs()[0],
+            _classification("oa"),
+            _email(datetime(2026, 8, 2, 19, 54, 3), message_id="assessment"),
+        )
+        assert _cell(sheets, row, "status") == "OA"
+
+        updated = checker._update_job_status(
+            sheets.get_all_jobs()[0],
+            _classification("confirmation"),
+            _email(datetime(2026, 8, 2, 19, 54, 6), message_id="ats-confirmation"),
+        )
+
+        assert updated is True
+        assert _cell(sheets, row, "status") == "OA"
+        assert _cell(sheets, row, "last_email_time") == "08/02/2026 19:54:06"
+        assert checker.stats["status_regression_blocked"] == 1
+
+    def test_held_status_keeps_its_own_colour(self, checker_config):
+        """Recolouring to a stage the row is not at is its own kind of wrong answer."""
+        sheets = MagicMock()
+        sheets.get_struck_rows.return_value = set()
+        job = SimpleNamespace(
+            row_number=404, company="Castleton", position="Full-Stack SWE Intern",
+            status="OA", application_date="", notes="", last_email_time="",
+            position_url="",
+        )
+        checker = _checker(checker_config, sheets)
+
+        checker._update_job_status(
+            job, _classification("confirmation"), _email(datetime(2026, 8, 2, 19, 54, 6))
+        )
+
+        sheets.apply_status_color.assert_called_once_with(404, "OA")
+
+    def test_held_status_sends_no_discord_notification(self, checker_config):
+        """No stage change happened, so announcing one would be a lie."""
+        checker_config.discord = SimpleNamespace(enabled=True)
+        checker_config.user = SimpleNamespace(target_companies=["Castleton"])
+
+        sheets = MagicMock()
+        sheets.get_struck_rows.return_value = set()
+        job = SimpleNamespace(
+            row_number=404, company="Castleton", position="Full-Stack SWE Intern",
+            status="OA", application_date="", notes="", last_email_time="",
+            position_url="",
+        )
+        checker = _checker(checker_config, sheets)
+
+        with patch("check_gmail.notify_status_change") as notify:
+            checker._update_job_status(
+                job, _classification("confirmation"),
+                _email(datetime(2026, 8, 2, 19, 54, 6)),
+            )
+
+        notify.assert_not_called()
+
+    @pytest.mark.parametrize("category,expected", [
+        ("oa", "OA"),            # same stage — no progress to make
+        ("confirmation", "OA"),  # earlier stage
+        ("phone", "Phone"),      # later stage still advances
+        ("rejection", "Rejected"),  # terminal, allowed from any stage
+    ])
+    def test_only_forward_moves_and_terminals_apply(self, checker_config, category, expected):
+        sheets = MockSheetsClient()
+        row = _seed_job(sheets)
+        checker = _checker(checker_config, sheets)
+
+        checker._update_job_status(
+            sheets.get_all_jobs()[0], _classification("oa"),
+            _email(datetime(2026, 8, 2, 10, 0, 0), message_id="first"),
+        )
+        checker._update_job_status(
+            sheets.get_all_jobs()[0], _classification(category),
+            _email(datetime(2026, 8, 2, 11, 0, 0), message_id="second"),
+        )
+
+        assert _cell(sheets, row, "status") == expected
+
     @pytest.mark.parametrize("garbage", ["TBD", "next Tuesday", "   "])
     def test_unparseable_cell_does_not_freeze_the_row(self, checker_config, garbage):
         sheets = MockSheetsClient()

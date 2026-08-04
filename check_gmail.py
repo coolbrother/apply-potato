@@ -41,7 +41,21 @@ from src.needs_review import (
     REASON_UNTRACKED,
     record_needs_review,
 )
-from src.sheets import SheetsClient, get_sheets_client, JobRow, normalize_date, parse_sheet_datetime
+from src.sheets import (
+    SheetsClient,
+    get_sheets_client,
+    JobRow,
+    normalize_date,
+    parse_sheet_datetime,
+    STATUS_APPLIED,
+    STATUS_GHOSTED,
+    STATUS_NEW,
+    STATUS_OA,
+    STATUS_OFFER,
+    STATUS_PHONE,
+    STATUS_REJECTED,
+    STATUS_TECHNICAL,
+)
 from src.notifications import is_dream_company, notify_status_change
 
 
@@ -57,6 +71,24 @@ CATEGORY_TO_STATUS = {
     "offer": "Offer",
     "rejection": "Rejected",
 }
+
+# How far along the pipeline each status is. A row may move up this ladder but never
+# back down: an application does not un-progress. Timestamps cannot enforce this on
+# their own, because the mail that would walk a row backwards is often genuinely newer
+# — Castleton sent the assessment invite and the "Thank You for Applying" confirmation
+# three seconds apart, the confirmation second, and it reset row 404 from OA to Applied.
+STATUS_RANK = {
+    STATUS_NEW: 0,
+    STATUS_APPLIED: 1,
+    STATUS_OA: 2,
+    STATUS_PHONE: 3,
+    STATUS_TECHNICAL: 4,
+    STATUS_OFFER: 5,
+}
+
+# Outcomes that end the process. They can arrive at any stage — a rejection after a
+# final round is still a rejection — so they are never treated as a regression.
+TERMINAL_STATUSES = {STATUS_REJECTED, STATUS_GHOSTED}
 
 # Mapping of email categories to date columns. "confirmation" is handled separately
 # in _update_job_status: application_date is single-valued and comes from the email's
@@ -130,6 +162,7 @@ class GmailChecker:
             "duplicate_rows": 0,
             "unknown_category": 0,
             "stale_skipped": 0,
+            "status_regression_blocked": 0,
         }
 
     def _find_matching_job(
@@ -322,6 +355,30 @@ class GmailChecker:
             return None
         return self._local_naive(email.date).strftime("%m/%d/%Y %H:%M:%S")
 
+    def _is_status_regression(self, current: Optional[str], new_status: str) -> bool:
+        """
+        True when writing new_status would move the row backwards down the pipeline.
+
+        The timestamp guard cannot catch this on its own. Two systems often mail within
+        the same minute — an assessment invite from the testing vendor, the "Thank You
+        for Applying" from the ATS — and the confirmation is frequently the newer of the
+        two, so it passes the staleness check and resets a row that has already reached
+        OA. That is what happened to row 404.
+
+        Terminal outcomes are exempt: a rejection can arrive at any stage and is still
+        the truth. An unrecognised status on either side returns False, so an unknown
+        value is never silently swallowed.
+        """
+        if new_status in TERMINAL_STATUSES:
+            return False
+
+        current_rank = STATUS_RANK.get((current or "").strip())
+        new_rank = STATUS_RANK.get(new_status)
+        if current_rank is None or new_rank is None:
+            return False
+
+        return new_rank <= current_rank
+
     def _is_newer_than_last_email(self, job: JobRow, email: EmailMessage) -> bool:
         """
         True when this email is allowed to modify the row.
@@ -407,8 +464,19 @@ class GmailChecker:
 
         updates = {}
 
-        # Update status
-        updates["status"] = new_status
+        # Update status, unless doing so would walk the row backwards. Two systems often
+        # mail within the same minute — an assessment invite from one vendor and the ATS
+        # confirmation from another — and whichever lands second wins on timestamp alone.
+        # Letting a confirmation reset a row already at OA loses real progress, so the
+        # status is held and everything else about the email is still recorded.
+        if self._is_status_regression(job.status, new_status):
+            logger.info(
+                f"Row {job.row_number} ({job.company}) is already {job.status}; "
+                f"keeping it rather than moving back to {new_status}"
+            )
+            self.stats["status_regression_blocked"] += 1
+        else:
+            updates["status"] = new_status
 
         # Rides the same batch as status, so recording it costs no extra API call.
         updates["last_email_time"] = self._local_naive(email.date).strftime(
@@ -442,16 +510,28 @@ class GmailChecker:
             note = "; ".join(note_parts)
             self.sheets_client.append_to_notes(job.row_number, note)
 
-        # Apply status update
+        # Apply status update. When the status was held back the row keeps whatever it
+        # already had, so the colour and the Discord ping must follow the status the row
+        # actually ends up with — recolouring to a stage the row is not at, or announcing
+        # a move that did not happen, is worse than the original overwrite.
+        status_written = "status" in updates
+        effective_status = new_status if status_written else job.status
+
         try:
             self.sheets_client.update_job(job.row_number, updates)
-            logger.info(f"Updated job status: {job.company} - {job.position} -> {new_status}")
+            if status_written:
+                logger.info(f"Updated job status: {job.company} - {job.position} -> {new_status}")
+            else:
+                logger.info(
+                    f"Recorded {category} mail on row {job.row_number} "
+                    f"({job.company}) without changing status {job.status}"
+                )
 
             # Apply row color based on status
-            self.sheets_client.apply_status_color(job.row_number, new_status)
+            self.sheets_client.apply_status_color(job.row_number, effective_status)
 
             # Send Discord notification if dream company
-            if self.config.discord.enabled and job.company:
+            if status_written and self.config.discord.enabled and job.company:
                 if is_dream_company(job.company, self.config.user.target_companies):
                     logger.info(f"  Dream company status change! Sending Discord notification...")
                     try:
@@ -657,6 +737,7 @@ class GmailChecker:
         logger.info(f"  Matched to jobs: {self.stats['matched']}")
         logger.info(f"  No match found: {self.stats['no_match']} (ambiguous: {self.stats['ambiguous']})")
         logger.info(f"  Stale (older than last email): {self.stats['stale_skipped']}")
+        logger.info(f"  Status held (would regress): {self.stats['status_regression_blocked']}")
         logger.info(f"  Jobs updated: {self.stats['updated']}")
         logger.info("=" * 60)
 
