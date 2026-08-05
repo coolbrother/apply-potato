@@ -191,14 +191,18 @@ class TestLiveSheets:
     def test_refresh_cache_from_sheets(self):
         """Test loading cache from live Google Sheets."""
         from src.config import get_config
-        from src.logging_config import setup_logging
         import os
 
         if not os.getenv("TEST_GOOGLE_SHEET_ID"):
             pytest.skip("TEST_GOOGLE_SHEET_ID not set")
 
+        # Deliberately does NOT call setup_logging(). That attaches a
+        # TimedRotatingFileHandler for the real logs/apply_potato.log to the ROOT
+        # logger and clears whatever was there, so it outlives this test and every
+        # later test in the session writes into the production log — ~480 lines of
+        # fixture traffic per run, interleaved with real pipeline output. Logging
+        # setup is incidental to what this test checks.
         config = get_config()
-        setup_logging("dedup_test", config, console=True)
 
         checker = DeduplicationChecker(config)
         checker.refresh_cache()

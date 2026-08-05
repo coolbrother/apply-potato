@@ -34,6 +34,70 @@ PROJECT_ROOT = Path(__file__).parent.parent
 
 
 # =============================================================================
+# Production log guard
+# =============================================================================
+
+# Any handler writing here pollutes real pipeline output with fixture traffic.
+PRODUCTION_LOG = PROJECT_ROOT / "logs" / "apply_potato.log"
+
+
+def _production_log_handlers():
+    """Handlers on any logger that write to the real apply_potato.log."""
+    import logging
+
+    loggers = [logging.getLogger()] + [
+        lg for lg in logging.Logger.manager.loggerDict.values()
+        if isinstance(lg, logging.Logger)
+    ]
+    target = str(PRODUCTION_LOG)
+    return [
+        (lg, h)
+        for lg in loggers
+        for h in lg.handlers
+        if str(getattr(h, "baseFilename", "")) == target
+    ]
+
+
+@pytest.fixture(autouse=True)
+def no_production_logging():
+    """
+    Keep the suite out of logs/apply_potato.log.
+
+    setup_logging() attaches a TimedRotatingFileHandler for the real log to the ROOT
+    logger and clears what was there, so a single test calling it silently redirects
+    every later test in the session into the production log. That happened via the
+    live-Sheets test in test_deduplication.py, which only skips when
+    TEST_GOOGLE_SHEET_ID is unset — and it is set in .env, so it always ran.
+
+    Restores the root logger either way, then fails the test that did it. Detaching
+    quietly would leave the next person to rediscover this the same way: by noticing
+    fixture companies in the middle of real pipeline output.
+    """
+    import logging
+
+    root = logging.getLogger()
+    saved_handlers, saved_level = list(root.handlers), root.level
+
+    yield
+
+    leaked = _production_log_handlers()
+    for logger, handler in leaked:
+        logger.removeHandler(handler)
+        handler.close()
+
+    root.handlers[:] = saved_handlers
+    root.setLevel(saved_level)
+
+    if leaked:
+        names = ", ".join(lg.name for lg, _ in leaked)
+        pytest.fail(
+            f"Test attached a handler for {PRODUCTION_LOG} to: {names}. "
+            f"Tests must not write to the production log — drop the setup_logging() "
+            f"call, or point it at a tmp_path logs_dir."
+        )
+
+
+# =============================================================================
 # Paths
 # =============================================================================
 
