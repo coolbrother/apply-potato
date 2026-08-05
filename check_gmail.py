@@ -57,6 +57,8 @@ from src.sheets import (
     STATUS_TECHNICAL,
 )
 from src.notifications import is_dream_company, notify_status_change
+from src.email_archive import save_status_email
+from src.job_desc import commit_and_push_job_folder
 
 
 logger = logging.getLogger(__name__)
@@ -355,6 +357,33 @@ class GmailChecker:
             return None
         return self._local_naive(email.date).strftime("%m/%d/%Y %H:%M:%S")
 
+    def _archive_status_email(self, job: JobRow, category: str, email: EmailMessage) -> None:
+        """
+        Copy an OA-or-later email into the job's folder, then push it.
+
+        Wrapped whole: this is bookkeeping hanging off a status update that has already
+        been written, so a missing directory, a git failure or an unwritable disk must
+        not surface as a failed update.
+        """
+        try:
+            path = save_status_email(
+                job.row_number,
+                job.company,
+                category,
+                email,
+                self.config.job_desc_output_dir,
+            )
+            if path is None:
+                return
+
+            commit_and_push_job_folder(
+                folder=path.parent,
+                repo_dir=self.config.job_desc_output_dir,
+                stem=path.parent.name,
+            )
+        except Exception as e:
+            logger.warning(f"  Status email archiving failed for row {job.row_number}: {e}")
+
     def _is_status_regression(self, current: Optional[str], new_status: str) -> bool:
         """
         True when writing new_status would move the row backwards down the pipeline.
@@ -529,6 +558,13 @@ class GmailChecker:
 
             # Apply row color based on status
             self.sheets_client.apply_status_color(job.row_number, effective_status)
+
+            # Keep the correspondence for OA and later. The row records that a stage
+            # happened; the email holds the assessment link, the deadline and the
+            # instructions. Runs after the sheet write so no archive file exists for a
+            # row that was not actually updated, and never raises: losing a status
+            # update to a disk error would be a far worse trade.
+            self._archive_status_email(job, category, email)
 
             # Send Discord notification if dream company
             if status_written and self.config.discord.enabled and job.company:
