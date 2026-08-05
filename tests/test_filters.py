@@ -407,6 +407,70 @@ class TestGraduationWindowStructured:
         assert result is True
 
 
+class TestUnsupportedGraduateMinimum:
+    """
+    A Graduate-or-above minimum must be visible in the text the AI quoted.
+
+    Given "Graduating between December 2027 and July 2028" the extractor files that
+    sentence as the class standing requirement and reads "Graduating" as the Graduate
+    level, rejecting undergraduates the posting invited. Millennium and PDT Partners
+    both failed this way.
+    """
+
+    @pytest.mark.parametrize("requirement", [
+        "Graduating between December 2027 and July 2028",
+        "graduating in Fall 2027 or later",
+        "Excellent academic background from a rigorous program",
+        "Expected GPA of 3.5 or above",
+    ])
+    def test_unsupported_graduate_minimum_is_ignored(self, requirement):
+        standing = ClassStandingRange(minimum="Graduate", maximum=None)
+        passed, reason = check_class_standing("Junior", requirement, standing)
+        assert passed is True, f"{requirement!r} does not support a Graduate minimum. {reason}"
+
+    @pytest.mark.parametrize("requirement", [None, ""])
+    def test_absent_text_leaves_the_bound_alone(self, requirement):
+        """
+        The guard overrules the extractor using its own evidence, never in the absence
+        of it. With nothing quoted there is nothing contradicting the bound, so a
+        structured Graduate minimum still rejects.
+        """
+        standing = ClassStandingRange(minimum="Graduate", maximum="PhD")
+        passed, _ = check_class_standing("Senior", requirement, standing)
+        assert passed is False
+
+    @pytest.mark.parametrize("requirement,minimum", [
+        ("graduate students only", "Graduate"),
+        ("Open to Master's and PhD students", "Graduate"),
+        ("must be enrolled in a PhD program", "PhD"),
+        ("This role is for candidates in a graduate program", "Graduate"),
+    ])
+    def test_supported_graduate_minimum_still_rejects(self, requirement, minimum):
+        """The guard must not blunt a genuine grad-only requirement."""
+        standing = ClassStandingRange(minimum=minimum, maximum=None)
+        passed, _ = check_class_standing("Junior", requirement, standing)
+        assert passed is False
+
+    def test_undergraduate_minimums_are_not_second_guessed(self):
+        """Freshman..Senior come from year-level words that are rarely invented."""
+        standing = ClassStandingRange(minimum="Senior", maximum=None)
+        passed, _ = check_class_standing("Sophomore", "must be a rising senior", standing)
+        assert passed is False
+
+    def test_a_graduate_user_still_passes_normally(self):
+        standing = ClassStandingRange(minimum="Graduate", maximum=None)
+        passed, _ = check_class_standing("Masters", "graduate students only", standing)
+        assert passed is True
+
+    def test_degree_list_including_bachelors_is_kept(self):
+        """The PDT case: 'Bachelor's, Master's, or PhD students' invites undergraduates."""
+        standing = ClassStandingRange(minimum="Graduate", maximum=None)
+        passed, _ = check_class_standing(
+            "Junior", "Current Bachelor's, Master's, or PhD students", standing
+        )
+        assert passed is True
+
+
 class TestInvertedGraduationWindow:
     """
     The AI intermittently files a floor date ("graduating in Fall 2027 or later") as

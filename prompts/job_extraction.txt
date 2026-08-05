@@ -84,8 +84,16 @@ class_standing_requirement:
   - "penultimate year" → "penultimate year"
   - "Must be enrolled in a college degree program and have earned 60 credit hours by the end of May 2026" → copy that exact text (enrollment + credit-hour requirement)
   - "Must be currently enrolled in a Bachelor's program" → copy that exact text
-- Do NOT put major/degree info here (goes in required_majors instead)
-- If no year-level or enrollment requirement mentioned, use null
+- Split a degree requirement in two. The LEVEL says who may apply and belongs here;
+  the FIELD is a major and goes in required_majors:
+  - "Pursuing a Bachelor's or Master's degree in Computer Science, Mathematics, or a
+    related quantitative field"
+    → class_standing_requirement: "Pursuing a Bachelor's or Master's degree"
+    → required_majors: ["Computer Science", "Mathematics"]
+  - "Must be enrolled in a PhD program in Statistics"
+    → class_standing_requirement: "Must be enrolled in a PhD program"
+    → required_majors: ["Statistics"]
+- If no year-level, enrollment or degree-level requirement is mentioned, use null
 
 - WHICH SENTENCE to copy, when the posting has several. Pick the one that says WHO MAY
   APPLY — the sentence naming a year level, an enrollment status, or a degree level.
@@ -97,6 +105,11 @@ class_standing_requirement:
     GRADUATION DATE, not who may apply. The graduation date belongs in
     graduation_timeline; nothing in it belongs here.
   - A sentence about grades, rigor, or "strong background" is never a class standing.
+  - A sentence that opens with "Graduating ..." and names dates is a GRADUATION
+    TIMELINE, never a class standing, however the posting orders its bullets:
+    - "Graduating between December 2027 and July 2028" alongside "Pursuing a Bachelor's
+      or Master's degree" → this field takes the Pursuing sentence;
+      graduation_timeline takes the Graduating sentence.
   - If one sentence states who may apply and another states when they graduate, this
     field takes the FIRST and graduation_timeline takes the second.
 

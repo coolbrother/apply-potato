@@ -368,6 +368,33 @@ def check_class_standing(user_standing: Optional[str], job_requirement: Optional
         max_level = _standing_to_level(standing_range.maximum)
 
         if min_level is not None and user_level < min_level:
+            # A claim that the user must be a graduate student has to be visible in the
+            # text the AI itself quoted. It repeatedly is not: given "Graduating between
+            # December 2027 and July 2028" it files that sentence as the class standing
+            # requirement and reads "Graduating" as the Graduate level, rejecting an
+            # undergraduate the posting invited. Millennium and PDT Partners both failed
+            # this way, and five successive prompt rules did not stop it.
+            #
+            # Only graduate-and-above minimums are checked. Freshman..Senior come from
+            # year-level words that are rarely invented, and demanding evidence for them
+            # would weaken filters that work. Consistent with this module's fail-open
+            # design: an unverifiable bound yields to the other filters rather than
+            # rejecting outright.
+            # Only fires when there IS quoted text that fails to support the claim. With
+            # no text there is nothing contradicting the AI, so the bound stands — this
+            # overrules the extractor using its own evidence, never in the absence of it.
+            if min_level >= CLASS_STANDING_LEVELS["graduate"] and job_requirement:
+                text_level = _parse_class_standing(job_requirement)
+                if text_level is None or text_level < min_level:
+                    logger.info(
+                        f"Class standing: normalized minimum ({standing_range.minimum}) is "
+                        f"unsupported by the quoted requirement {job_requirement!r}; ignoring it"
+                    )
+                    return True, (
+                        f"User ({user_standing}) kept — normalized minimum "
+                        f"({standing_range.minimum}) unsupported by the posting text"
+                    )
+
             return False, f"User ({user_standing}) is below minimum standing ({standing_range.minimum})"
 
         if max_level is not None and user_level > max_level:
