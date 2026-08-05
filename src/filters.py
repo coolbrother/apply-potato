@@ -107,6 +107,28 @@ GRADUATION_FLOOR_PHRASES = (
     "onward",
 )
 
+# Degree levels named in prose. The year shortcuts below ("penultimate year", "final
+# year") assume a four-year bachelor's, but "the penultimate year of a Masters or PhD"
+# is the second-to-last year OF A GRADUATE PROGRAM — reading it as Junior let two
+# genuinely graduate-only postings through. Plurals and abbreviations are covered here
+# rather than in CLASS_STANDING_LEVELS because \bphd\b does not match "PhDs", and a
+# bare "MS" is too ambiguous to put in the general keyword matcher.
+# A bare "MS" is only read as the degree when degree-shaped words follow it, so
+# "MS Office" in scraped prose cannot masquerade as a master's requirement. ("20ms"
+# never matches: there is no word boundary between the digit and the m.)
+_MASTERS = r"master'?s?|msc|m\.s\.|post-?graduate|ms\b(?=\s*(?:[/,]|or\b|and\b|with\b|degree|student|candidate|program))"
+
+GRADUATE_DEGREE_PATTERN = re.compile(
+    rf"\b(?:{_MASTERS}|phd'?s?|ph\.?\s?d\.?s?|doctoral|doctorate)\b",
+    re.IGNORECASE,
+)
+PHD_DEGREE_PATTERN = re.compile(
+    r"\b(?:phd'?s?|ph\.?\s?d\.?s?|doctoral|doctorate)\b", re.IGNORECASE
+)
+UNDERGRAD_DEGREE_PATTERN = re.compile(
+    r"\b(?:bachelor'?s?|b\.s\.|bsc|undergraduate|undergrad)\b", re.IGNORECASE
+)
+
 # Academic-year shorthand: "2026/27" covers both 2026 and 2027.
 ACADEMIC_YEAR_PATTERN = re.compile(r"\b(\d{4})\s*[/-]\s*(\d{2})\b")
 
@@ -145,6 +167,19 @@ def _parse_class_standing(text: str) -> Optional[int]:
         return None
 
     text_lower = text.lower().strip()
+
+    # A requirement scoped only to graduate degrees, before any year shortcut runs.
+    # "the final or penultimate year of a Masters or PhD" is a year of a GRADUATE
+    # programme; PENULTIMATE_PATTERN below would read it as Junior and let an
+    # undergraduate through. Both G-Research postings and Two Sigma failed this way.
+    #
+    # Requires the absence of an undergraduate degree, so a widening list — "Current
+    # Bachelor's, Master's, or PhD students" — still resolves to Freshman further down.
+    if GRADUATE_DEGREE_PATTERN.search(text_lower) and not UNDERGRAD_DEGREE_PATTERN.search(text_lower):
+        only_doctoral = bool(PHD_DEGREE_PATTERN.search(text_lower)) and not re.search(
+            rf"\b(?:{_MASTERS})", text_lower, re.IGNORECASE
+        )
+        return CLASS_STANDING_LEVELS["phd"] if only_doctoral else CLASS_STANDING_LEVELS["graduate"]
 
     # Check for "current student" pattern - any student qualifies (level 1)
     if CURRENT_STUDENT_PATTERN.search(text_lower):

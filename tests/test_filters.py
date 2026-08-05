@@ -407,6 +407,68 @@ class TestGraduationWindowStructured:
         assert result is True
 
 
+class TestGraduateScopedYearPhrases:
+    """
+    "the penultimate year of a Masters or PhD" is a year of a GRADUATE programme.
+
+    The year shortcuts assume a four-year bachelor's, so PENULTIMATE_PATTERN read that
+    as Junior — which made the evidence guard conclude a Graduate minimum was
+    unsupported and let two genuinely graduate-only postings through. Two Sigma and
+    both G-Research roles failed this way; the AI eligibility pass caught them.
+    """
+
+    @pytest.mark.parametrize("requirement,expected", [
+        ("This role is only open to MS with work experience and PhDs, both in their "
+         "penultimate year of study.", 5),
+        ("the final or penultimate year of a Masters or PhD", 5),
+        ("A post-graduate degree in Machine Learning or a related discipline", 5),
+        ("Open to Master's and PhD students", 5),
+        ("must be enrolled in a PhD program", 6),
+        ("graduate students only", 5),
+    ])
+    def test_graduate_scoped_phrases_read_as_graduate(self, requirement, expected):
+        assert _parse_class_standing(requirement) == expected
+
+    @pytest.mark.parametrize("requirement", [
+        "Current Bachelor's, Master's, or PhD students",
+        "Pursuing a Bachelor's or Master's degree in Computer Science",
+        "open to undergraduate and graduate students",
+    ])
+    def test_naming_an_undergraduate_degree_still_admits_undergrads(self, requirement):
+        """A widening list must not be caught by the graduate-scope rule."""
+        assert _parse_class_standing(requirement) == 1
+
+    @pytest.mark.parametrize("requirement,expected", [
+        ("penultimate year", 3),
+        ("approaching their final year", 3),
+        ("final year", 4),
+        ("rising senior", 3),
+        ("must be a Junior or Senior", 3),
+        ("currently enrolled", 1),
+    ])
+    def test_undergraduate_year_phrases_are_unchanged(self, requirement, expected):
+        assert _parse_class_standing(requirement) == expected
+
+    @pytest.mark.parametrize("requirement", [
+        "Proficiency with MS Office and Excel",
+        "latency under 20ms required",
+    ])
+    def test_bare_ms_is_not_a_degree(self, requirement):
+        """"MS" only counts as the degree when degree-shaped words follow it."""
+        assert _parse_class_standing(requirement) is None
+
+    def test_two_sigma_is_rejected_end_to_end(self):
+        """The regression this fixes: the guard must not rescue a grad-only posting."""
+        standing = ClassStandingRange(minimum="Graduate", maximum=None)
+        passed, _ = check_class_standing(
+            "Junior",
+            "This role is only open to MS with work experience and PhDs, both in "
+            "their penultimate year of study.",
+            standing,
+        )
+        assert passed is False
+
+
 class TestUnsupportedGraduateMinimum:
     """
     A Graduate-or-above minimum must be visible in the text the AI quoted.
