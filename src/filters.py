@@ -8,7 +8,12 @@ import re
 from datetime import datetime
 from typing import Optional, Tuple
 
-from .config import Config, UserProfile, get_config
+from .config import (
+    Config,
+    UserProfile,
+    get_config,
+    ELIGIBILITY_MODE_AI,
+)
 from .ai_extractor import (
     ClassStandingRange,
     ExtractedJob,
@@ -727,23 +732,56 @@ def check_job_type(user_target: str, job_type: Optional[str]) -> Tuple[bool, str
     return False, f"Job type mismatch: user wants {user_target}, job is {job_type}"
 
 
-def passes_hard_filters(user: UserProfile, job: ExtractedJob) -> Tuple[bool, str, str]:
+def passes_hard_filters(
+    user: UserProfile,
+    job: ExtractedJob,
+    judgment=None,
+    mode: Optional[str] = None,
+) -> Tuple[bool, str, str]:
     """
     Check if a job passes all hard eligibility filters.
 
     Args:
         user: User profile from config
         job: Extracted job data
+        judgment: Optional EligibilityJudgment from the AI pass. Only consulted in
+            "ai" mode, and only when it validated — an unusable judgment falls through
+            to the code path rather than deciding anything.
+        mode: Eligibility mode override. Defaults to config.eligibility_mode.
 
     Returns:
         Tuple of (passes, reason, category) where category is the failing filter name
         or "none" if all passed.
     """
-    # Check job type first (most common filter)
+    # Check job type first (most common filter). Mechanical filters run in code in
+    # every mode: they are exact comparisons over well-formed fields, they work, and
+    # they cost nothing.
     passed, reason = check_job_type(user.target_job_type, job.job_type)
     if not passed:
         logger.debug(f"Job failed job type filter: {reason}")
         return False, reason, "job_type"
+
+    # In "ai" mode the pass owns class standing, graduation and work authorization.
+    # It is consulted only after the mechanical filters, so a job the user never
+    # wanted is rejected on the cheap check rather than on an eligibility verdict.
+    if mode is None:
+        mode = get_config().eligibility_mode
+    if mode == ELIGIBILITY_MODE_AI and judgment is not None and judgment.usable:
+        if not judgment.eligible:
+            failing = judgment.failing_check
+            category = failing.dimension if failing else "eligibility"
+            logger.debug(f"Job failed AI eligibility: {judgment.reason()}")
+            return False, judgment.reason(), category
+        # The pass cleared the prose dimensions; season/year still applies.
+        passed, reason = check_season_year(
+            user.target_season_year,
+            job.season_year,
+            job.season_year_parsed,
+        )
+        if not passed:
+            logger.debug(f"Job failed season/year filter: {reason}")
+            return False, reason, "season_year"
+        return True, "Passed all hard filters (AI eligibility)", "none"
 
     # Check class standing
     passed, reason = check_class_standing(

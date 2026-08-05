@@ -11,6 +11,18 @@ from dataclasses import dataclass, field
 from dotenv import load_dotenv
 
 
+# Who decides eligibility. Defined here rather than in filters.py so config can
+# validate the value without importing the filter module.
+ELIGIBILITY_MODE_CODE = "code"      # filters.py alone — the behaviour that shipped
+ELIGIBILITY_MODE_SHADOW = "shadow"  # both run, filters.py decides, disagreements logged
+ELIGIBILITY_MODE_AI = "ai"          # the eligibility pass decides the prose dimensions
+ELIGIBILITY_MODES = (
+    ELIGIBILITY_MODE_CODE,
+    ELIGIBILITY_MODE_SHADOW,
+    ELIGIBILITY_MODE_AI,
+)
+
+
 @dataclass
 class GitHubRepo:
     """GitHub repository configuration."""
@@ -119,6 +131,11 @@ class Config:
 
     # Base resume for document generation (Phase 2)
     base_resume_path: Path
+
+    # Who decides eligibility: "code" (filters.py alone), "shadow" (both run, filters.py
+    # still decides, disagreements logged) or "ai" (the eligibility pass decides the
+    # prose dimensions). See ELIGIBILITY_MODE in .env.example.
+    eligibility_mode: str
 
     # Advanced Settings
     max_retries: int
@@ -330,6 +347,18 @@ def load_config(env_path: Optional[Path] = None) -> Config:
         print(f"ERROR: AI_PROVIDER must be 'openai' or 'gemini', got '{ai_provider}'")
         sys.exit(1)
 
+    # Who decides eligibility. Unlike AI_PROVIDER this does not exit on a bad value:
+    # a typo here must not take the pipeline down, and falling back to "code" leaves
+    # the filters fully enforced. Silently accepting the typo is the one outcome to
+    # avoid, so it warns loudly.
+    eligibility_mode = _get_optional("ELIGIBILITY_MODE", ELIGIBILITY_MODE_CODE).strip().lower()
+    if eligibility_mode not in ELIGIBILITY_MODES:
+        print(
+            f"WARNING: ELIGIBILITY_MODE must be one of {', '.join(sorted(ELIGIBILITY_MODES))}, "
+            f"got '{eligibility_mode}' — falling back to '{ELIGIBILITY_MODE_CODE}'"
+        )
+        eligibility_mode = ELIGIBILITY_MODE_CODE
+
     # Get API keys (only the selected provider is required)
     openai_api_key = _get_optional("OPENAI_API_KEY")
     gemini_api_key = _get_optional("GEMINI_API_KEY")
@@ -444,6 +473,7 @@ def load_config(env_path: Optional[Path] = None) -> Config:
         google_credentials_path=creds_path,
         google_sheet_id=_get_required("GOOGLE_SHEET_ID"),
         ai_provider=ai_provider,
+        eligibility_mode=eligibility_mode,
         openai_model=_get_optional("OPENAI_MODEL", "gpt-4o-mini"),
         gemini_model=_get_optional("GEMINI_MODEL", "gemini-2.0-flash"),
         openai_max_tokens=_get_optional_int("OPENAI_MAX_TOKENS"),

@@ -1,0 +1,90 @@
+You decide whether ONE specific person is eligible to apply for ONE job posting.
+
+You are NOT summarising the posting and NOT filling in a schema. You are answering a
+concrete question: can this applicant apply for this role?
+
+THE APPLICANT
+Class standing: {class_standing}
+Expected graduation: {graduation_date}
+Degree level: {degree_level}
+Major(s): {major}
+Work authorization: {work_authorization}
+
+THE POSTING
+{content}
+
+RETURN ONLY VALID JSON — no explanations, no markdown fences:
+
+{
+    "eligible": true | false,
+    "checks": [
+        {
+            "dimension": "class_standing | graduation_timeline | work_authorization",
+            "passes": true | false,
+            "evidence": "the sentence from the posting you relied on, copied EXACTLY",
+            "reasoning": "one sentence tying that requirement to the applicant"
+        }
+    ],
+    "blocking_reason": "one sentence naming the single requirement that disqualifies them, or null"
+}
+
+RULES
+
+1. Judge only these three dimensions: class_standing, graduation_timeline,
+   work_authorization. Job type and season/year are decided elsewhere — ignore them
+   entirely, even if the posting is for a season the applicant did not ask about.
+
+2. "eligible" is false if and only if at least one check has "passes": false.
+   Set "blocking_reason" to name that requirement, otherwise null.
+
+3. EVIDENCE MUST BE COPIED VERBATIM from the posting — an exact substring, not a
+   paraphrase, not a summary, not reformatted. A check with invented evidence is
+   discarded and the job falls back to the old code path, so paraphrasing silently
+   throws your answer away. If the posting says nothing about a dimension, omit that
+   check entirely rather than inventing a quote.
+
+4. Silence is not a requirement. If the posting states no class standing requirement,
+   there is no class standing check to fail. Do not infer a requirement from the
+   seniority of the title, the prestige of the company, or the difficulty of the work.
+
+5. Only reject on what the posting actually requires of the APPLICANT. Descriptions of
+   the role, the team, the pay, or the ideal candidate are not eligibility rules.
+   "Strong programming skills" and "excellent academic background" disqualify nobody.
+
+READING REQUIREMENTS CORRECTLY — these are the specific mistakes to avoid.
+
+A list of degree levels is an OR, and naming a senior degree WIDENS eligibility:
+  - "Current Bachelor's, Master's, or PhD students" — a Junior qualifies, via
+    Bachelor's. The presence of PhD does not make this graduates-only.
+  - "Pursuing a Bachelor's or Master's degree in Computer Science" — a Junior
+    qualifies. The field (Computer Science) is a major requirement, not a standing.
+  - "Master's or PhD students only" — a Junior does NOT qualify; no undergraduate
+    degree is named.
+
+"Graduate" as a verb or a date is not the Graduate degree level:
+  - "Graduating between December 2027 and July 2028" is a GRADUATION TIMELINE. It says
+    nothing about whether the applicant must be a graduate student.
+  - "graduating in Fall 2027 or later", "the last requirement for you to graduate" —
+    same. Only the noun sense ("graduate students", "enrolled in a graduate program")
+    means the Graduate level.
+
+Graduation windows have a direction — read the whole phrase:
+  - "graduating in Fall 2027 or later" is a FLOOR. Someone graduating May 2028 is
+    eligible; someone graduating May 2027 is not.
+  - "must graduate by June 2027" is a CEILING — the opposite.
+  - "Graduation date of December 2027 or May 2028" is a LIST of acceptable dates, not
+    a range and not a deadline. Someone graduating May 2028 is eligible.
+  - "between December 2027 and July 2028" is a range; May 2028 falls inside it.
+
+Enrollment-only requirements admit any current student:
+  - "must be currently enrolled", "must return to school after the internship" — these
+    require being a student, and set no year level. A Junior qualifies.
+
+Work authorization:
+  - Reject only when the posting's requirement genuinely excludes this applicant, e.g.
+    it requires citizenship the applicant does not have, or states it will not sponsor
+    and the applicant needs sponsorship.
+  - A US Citizen meets every authorization requirement. Never reject one.
+
+WHEN GENUINELY UNSURE, PASS. A wrongly rejected job is invisible to the applicant and
+lost. A wrongly passed job costs them one glance at a posting they cannot apply to.

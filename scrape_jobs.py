@@ -28,7 +28,14 @@ from typing import List, Optional
 
 from apscheduler.schedulers.blocking import BlockingScheduler
 
-from src.config import get_config, Config
+from src.config import (
+    get_config,
+    Config,
+    ELIGIBILITY_MODES,
+    ELIGIBILITY_MODE_AI,
+    ELIGIBILITY_MODE_CODE,
+    ELIGIBILITY_MODE_SHADOW,
+)
 from src.logging_config import setup_logging
 from src.github_parser import GitHubParser, JobListing
 from src.newsletter_parser import NewsletterParser
@@ -37,6 +44,8 @@ from src.scraper import PlaywrightScraper
 from src.ai_extractor import AIExtractor, ExtractedJob
 from src.deduplication import DeduplicationChecker, get_dedup_checker, normalize_url
 from src.filters import passes_hard_filters
+from src.eligibility import get_eligibility_judge
+from src.eligibility_log import record_disagreement
 from src.scoring import calculate_fit_score
 from src.sheets import SheetsClient, get_sheets_client
 from src.notifications import notify_dream_company_job, is_dream_company
@@ -81,14 +90,30 @@ class JobScraper:
     Orchestrates the flow from GitHub → Sheets.
     """
 
-    def __init__(self, config: Optional[Config] = None):
+    def __init__(self, config: Optional[Config] = None, eligibility_mode: Optional[str] = None):
         """
         Initialize the job scraper.
 
         Args:
             config: Optional config object. Uses global config if not provided.
+            eligibility_mode: Override ELIGIBILITY_MODE for this run, so a mode can be
+                tried against live postings without editing .env or restarting the
+                service. An unrecognized value falls back to the configured mode.
         """
         self.config = config or get_config()
+
+        self.eligibility_mode = self.config.eligibility_mode
+        if eligibility_mode:
+            candidate = eligibility_mode.strip().lower()
+            if candidate in ELIGIBILITY_MODES:
+                self.eligibility_mode = candidate
+            else:
+                logger.warning(
+                    f"Unknown --eligibility-mode {eligibility_mode!r}; "
+                    f"using {self.eligibility_mode!r} from config"
+                )
+        if self.eligibility_mode != ELIGIBILITY_MODE_CODE:
+            logger.info(f"Eligibility mode: {self.eligibility_mode}")
         self.github_parser = GitHubParser(self.config)
         self.ai_extractor = AIExtractor(self.config)
         self.dedup_checker = get_dedup_checker(self.config)
@@ -116,6 +141,7 @@ class JobScraper:
             "extraction_failures": 0,
             "filtered_out": 0,
             "jobs_added": 0,
+            "eligibility_disagreements": 0,
         }
 
     def close(self):
@@ -201,6 +227,65 @@ class JobScraper:
             "source": listing.source_repo,
             "notes": "; ".join(score_notes) if score_notes else "",
         }
+
+    def _judge_eligibility(self, content: Optional[str]):
+        """
+        Run the AI eligibility pass, or return None when the mode does not need it.
+
+        None means "no judgment" everywhere downstream: filters.py falls back to the
+        code path. Wrapped so a failure in the new path can never cost a job that the
+        old path would have accepted.
+        """
+        if self.eligibility_mode == ELIGIBILITY_MODE_CODE or not content:
+            return None
+        try:
+            return get_eligibility_judge(self.config).judge(content, self.config.user)
+        except Exception as e:
+            logger.warning(f"  Eligibility judgment failed, falling back to filters: {e}")
+            return None
+
+    def _record_eligibility_disagreement(
+        self,
+        extracted: ExtractedJob,
+        final_url: str,
+        judgment,
+        passed: bool,
+        reason: str,
+        category: str,
+    ) -> None:
+        """
+        In shadow mode, log the postings the two paths decide differently.
+
+        Only disagreements are written. A log where the interesting rows are a
+        fraction of the lines does not get read, and reading it is the entire point.
+        """
+        if self.eligibility_mode != ELIGIBILITY_MODE_SHADOW or judgment is None:
+            return
+        if not judgment.usable or judgment.eligible == passed:
+            return
+        try:
+            written = record_disagreement(
+                self.config.data_dir,
+                url=final_url,
+                company=extracted.company or "",
+                title=extracted.title or "",
+                code_passed=passed,
+                code_reason=reason,
+                code_category=category,
+                judgment=judgment,
+            )
+            if written:
+                verdicts = (
+                    f"code={'pass' if passed else 'reject'} "
+                    f"ai={'pass' if judgment.eligible else 'reject'}"
+                )
+                logger.info(
+                    f"  Eligibility disagreement ({verdicts}): "
+                    f"{extracted.company} - {extracted.title}"
+                )
+                self.stats["eligibility_disagreements"] += 1
+        except Exception as e:
+            logger.warning(f"  Could not record eligibility disagreement: {e}")
 
     async def _process_listing(self, listing: JobListing, scraper: PlaywrightScraper) -> Optional[bool]:
         """
@@ -305,6 +390,10 @@ class JobScraper:
             )
             return "Failed (extraction error)"
 
+        # Judge eligibility once per page, before looping over its positions. Skipped
+        # entirely in "code" mode, so the default costs nothing.
+        judgment = self._judge_eligibility(content)
+
         # Process each extracted job (some postings have multiple positions)
         added_any = False
         filter_reason = None
@@ -314,8 +403,16 @@ class JobScraper:
             logger.debug(f"    job_type={extracted.job_type}, season_year={extracted.season_year}")
             logger.debug(f"    class_standing={extracted.class_standing_requirement}, work_auth={extracted.work_authorization}")
 
-            # Apply hard filters
-            passed, reason, category = passes_hard_filters(self.config.user, extracted)
+            # Apply hard filters. The judgment is computed once for the page and
+            # shared across every position on it — a multi-position posting states its
+            # eligibility once, so judging each position separately would pay for the
+            # same answer repeatedly.
+            passed, reason, category = passes_hard_filters(
+                self.config.user, extracted, judgment=judgment, mode=self.eligibility_mode
+            )
+            self._record_eligibility_disagreement(
+                extracted, final_url, judgment, passed, reason, category
+            )
             if not passed:
                 logger.warning(f"  Filtered out: {extracted.company} - {reason}")
                 self.stats["filtered_out"] += 1
@@ -571,18 +668,21 @@ class JobScraper:
         logger.info(f"  Scrape failures: {self.stats['scrape_failures']}")
         logger.info(f"  Extraction failures: {self.stats['extraction_failures']}")
         logger.info(f"  Filtered out: {self.stats['filtered_out']}")
+        if self.eligibility_mode == ELIGIBILITY_MODE_SHADOW:
+            logger.info(f"  Eligibility disagreements: {self.stats['eligibility_disagreements']}")
         logger.info(f"  Jobs added: {self.stats['jobs_added']}")
         logger.info("=" * 60)
 
         return self.stats
 
 
-def run_once(limit: Optional[int] = None, only: Optional[List[str]] = None, with_docs: bool = False):
+def run_once(limit: Optional[int] = None, only: Optional[List[str]] = None,
+             with_docs: bool = False, eligibility_mode: Optional[str] = None):
     """Run Phase 1. If with_docs=True, also run Phase 2 afterwards."""
     config = get_config()
     setup_logging("scrape", config, console=True)
 
-    with JobScraper(config) as scraper:
+    with JobScraper(config, eligibility_mode=eligibility_mode) as scraper:
         stats = asyncio.run(scraper.run(limit=limit, only=only))
 
     if with_docs:
@@ -596,7 +696,7 @@ def run_once(limit: Optional[int] = None, only: Optional[List[str]] = None, with
     return stats
 
 
-async def _run_single_url(url: str):
+async def _run_single_url(url: str, eligibility_mode: Optional[str] = None):
     """Run Phase 1 against a single job URL (for testing). Returns the result."""
     from src.scraper import PlaywrightScraper
 
@@ -611,7 +711,7 @@ async def _run_single_url(url: str):
         age_days=0,
     )
 
-    with JobScraper(config) as job_scraper:
+    with JobScraper(config, eligibility_mode=eligibility_mode) as job_scraper:
         async with PlaywrightScraper(config) as scraper:
             result = await job_scraper._process_listing(listing, scraper)
 
@@ -619,10 +719,10 @@ async def _run_single_url(url: str):
     return result
 
 
-def run_single_url(url: str, with_docs: bool = False):
+def run_single_url(url: str, with_docs: bool = False, eligibility_mode: Optional[str] = None):
     config = get_config()
     setup_logging("scrape", config, console=True)
-    asyncio.run(_run_single_url(url))
+    asyncio.run(_run_single_url(url, eligibility_mode=eligibility_mode))
 
     if with_docs:
         logger.info("")
@@ -633,7 +733,7 @@ def run_single_url(url: str, with_docs: bool = False):
         run_all(config)
 
 
-def run_scheduled():
+def run_scheduled(eligibility_mode: Optional[str] = None):
     """Run the pipeline on a schedule."""
     config = get_config()
     setup_logging("scrape", config, console=True)
@@ -645,7 +745,7 @@ def run_scheduled():
 
     def job():
         try:
-            with JobScraper(config) as scraper:
+            with JobScraper(config, eligibility_mode=eligibility_mode) as scraper:
                 asyncio.run(scraper.run())
         except Exception as e:
             logger.error(f"Scheduled job failed: {e}")
@@ -696,6 +796,11 @@ def main():
                         help="Run the full pipeline against a single job URL (for testing)")
     parser.add_argument("--with-docs", action="store_true",
                         help="Also run Phase 2 (doc generation) after Phase 1 completes")
+    parser.add_argument("--eligibility-mode", type=str, choices=ELIGIBILITY_MODES,
+                        help="Override ELIGIBILITY_MODE for this run: 'code' (filters.py "
+                             "alone), 'shadow' (both run, filters.py decides, "
+                             "disagreements logged) or 'ai' (the eligibility pass decides "
+                             "class standing, graduation and work auth)")
     args = parser.parse_args()
 
     if args.clear_filtered:
@@ -703,12 +808,14 @@ def main():
     elif args.clear_seen:
         clear_seen()
     elif args.scheduled:
-        run_scheduled()
+        run_scheduled(eligibility_mode=args.eligibility_mode)
     elif args.url:
-        run_single_url(args.url, with_docs=args.with_docs)
+        run_single_url(args.url, with_docs=args.with_docs,
+                       eligibility_mode=args.eligibility_mode)
     else:
         only = [s.strip() for s in args.only.split(",")] if args.only else None
-        run_once(limit=args.limit, only=only, with_docs=args.with_docs)
+        run_once(limit=args.limit, only=only, with_docs=args.with_docs,
+                 eligibility_mode=args.eligibility_mode)
 
 
 if __name__ == "__main__":
