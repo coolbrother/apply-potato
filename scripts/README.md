@@ -97,6 +97,48 @@ python test_ai_extractor.py --save
 
 ---
 
+### query_sheet.py
+
+Read-only inspection of the job database (`GOOGLE_SHEET_ID`). Marks struck rows so they
+are not mistaken for live ones.
+
+**Never writes** — only `values().get()` / `spreadsheets().get()`. Keep it that way; it
+is allowlisted to run without a permission prompt precisely because it cannot change
+anything.
+
+**Usage:**
+
+```bash
+# Specific rows, or an inclusive range
+python scripts/query_sheet.py --rows 261,317,478
+python scripts/query_sheet.py --range 515-525
+
+# Every row for a company (substring match)
+python scripts/query_sheet.py --company Susquehanna
+
+# Underlying formulas rather than displayed text
+python scripts/query_sheet.py --rows 518 --formulas
+
+# Row count, last populated row, status breakdown
+python scripts/query_sheet.py --summary
+
+# Narrow the output to certain columns
+python scripts/query_sheet.py --range 515-525 --columns company,position,status
+```
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--rows N,N,...` | Comma-separated row numbers |
+| `--range A-B` | Inclusive row range |
+| `--company <name>` | Rows whose company contains this string |
+| `--summary` | Row count, last populated row, status breakdown |
+| `--columns a,b,c` | Subset of the `COLUMNS` keys (default: all) |
+| `--formulas` | Render formulas (e.g. `=HYPERLINK`) instead of display text |
+
+---
+
 ## Typical Workflows
 
 ### Debug GitHub parser issues
