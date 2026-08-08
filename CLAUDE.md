@@ -40,7 +40,7 @@ Two independent entry points (`scrape_jobs.py`, `check_gmail.py`) share the `src
 
 ### Job scraping pipeline (`scrape_jobs.py`)
 
-1. **Discovery** — `GitHubParser` fetches raw markdown from GitHub repos and parses job tables; `NewsletterParser` reads newsletter HTML emails from Gmail. Both return `JobListing[]`.
+1. **Discovery** — three sources, each returning `JobListing[]`: `GitHubParser` fetches raw markdown from GitHub repos and parses job tables; `SheetsJobListParser` reads hand-entered URLs from the **Job List** spreadsheet; `NewsletterParser` reads newsletter HTML emails from Gmail.
 2. **Dedup** — `Deduplicator` checks three caches: Sheets URLs already added, `filtered_jobs.json` (previously rejected), `seen_sources.json` (source URLs with TTL). Skip if already seen.
 3. **Scrape** — `PlaywrightScraper` (persistent headed Chrome, anti-detection) fetches the job page and returns `(content, final_url, is_blocked)`.
 4. **Extract** — `AIExtractor` calls OpenAI or Gemini with `prompts/job_extraction.txt` and returns one or more `ExtractedJob` dataclass instances (20+ fields).
@@ -54,6 +54,22 @@ Two independent entry points (`scrape_jobs.py`, `check_gmail.py`) share the `src
 Fetch emails from Primary inbox → sort oldest-first → privacy filters (`email_filters.py`) → AI classification (`email_classifier.py`, same provider config) → fuzzy-match company to a Sheets row → skip if the email is older than the row's `Last Email Time` (column V) → update status + color + notes + `Last Email Time` → Discord notify on dream company changes.
 
 The staleness guard is why the batch is sorted: Gmail returns newest-first, and only strictly-newer emails may modify a row, so unsorted processing would apply one email per row and drop the rest. `--reprocess` bypasses the guard.
+
+### The two Google Sheets
+
+Two separate spreadsheets, with different schemas and different code:
+
+| Config key | Title | Tab | Role |
+|---|---|---|---|
+| `GOOGLE_SHEET_ID` | *ApplyPotato Windows* | `Jobs` | The job database — one row per job. `src/sheets.py` |
+| `JOB_LIST_SHEET_ID` | *Job List* | `Sheet1` | Input queue of hand-pasted URLs. `src/sheets_job_list_parser.py` |
+
+An unqualified "the sheet" means the job database. Job List is one discovery source
+among GitHub and newsletters, and is optional.
+
+They connect one way: paste a URL into Job List with `Result` blank, the next scrape
+picks it up, and writes the outcome back to `Result` (`Done`, `Filtered out`, `Failed`,
+…). URLs that survive filtering become rows in the job database.
 
 ### Configuration (`src/config.py`)
 
@@ -70,7 +86,8 @@ Single `.env` file (see `.env.example`). `get_config()` is a module-level single
 | `src/filters.py` | Hard eligibility filters (binary) |
 | `src/scoring.py` | Soft fit score 0–100 |
 | `src/deduplication.py` | URL normalization + three-tier caching |
-| `src/sheets.py` | Google Sheets CRUD, 22-column schema (A–V, derived from `COLUMNS`), date parsing/dedupe helpers, color formatting |
+| `src/sheets.py` | Job-database CRUD (`GOOGLE_SHEET_ID`), 22-column schema (A–V, derived from `COLUMNS`), date parsing/dedupe helpers, color formatting |
+| `src/sheets_job_list_parser.py` | Job List queue (`JOB_LIST_SHEET_ID`): read pending URLs, write `Result`/`Notes` back |
 | `src/gmail.py` | Gmail API client, OAuth, Primary inbox only |
 | `src/email_classifier.py` | AI email classification → status category |
 | `src/email_filters.py` | Pre-AI noise filter for automated/transactional mail |
@@ -81,7 +98,8 @@ Single `.env` file (see `.env.example`). `get_config()` is a module-level single
 
 ### State & persistence
 
-- **Google Sheets** — primary job database; status, notes, dates, fit score
+- **Google Sheets (*ApplyPotato Windows*)** — primary job database; status, notes, dates, fit score
+- **Google Sheets (*Job List*)** — input queue; its `Result` column is the dedup state, no local cache
 - `data/filtered_jobs.json` — URLs that failed hard filters (skipped on re-runs)
 - `data/seen_sources.json` — GitHub/newsletter source URLs with TTL
 - `data/processed_emails.json` — Gmail message IDs already handled
