@@ -587,11 +587,20 @@ class TestAppendedRowColor:
         assert row == 306
         assert fmt["strikethrough"] is False
 
+    def _repeat_cell_masks(self, client):
+        """Every repeatCell field mask sent while adding the row."""
+        return [
+            r["repeatCell"]["fields"]
+            for call in client._service.spreadsheets().batchUpdate.call_args_list
+            for r in call.kwargs.get("body", {}).get("requests", [])
+            if "repeatCell" in r
+        ]
+
     def test_appended_row_clears_all_inherited_text_format(self, client):
         """
         Resetting only the properties known to be set elsewhere reintroduces this bug
         the next time a new one appears — colour was reset here and strikethrough was
-        not, which is how 420-462 happened. The whole textFormat goes.
+        not, which is how 420-462 happened. All four go together.
         """
         client.add_job({"company": "Uber", "position": "SWE Intern"})
 
@@ -600,16 +609,31 @@ class TestAppendedRowColor:
             "strikethrough": False, "bold": False, "italic": False, "underline": False,
         }
 
-        masks = [
-            r["repeatCell"]["fields"]
-            for call in client._service.spreadsheets().batchUpdate.call_args_list
-            for r in call.kwargs.get("body", {}).get("requests", [])
-            if "repeatCell" in r
-        ]
-        assert "userEnteredFormat.textFormat" in masks
+        masks = self._repeat_cell_masks(client)
+        for prop in ("strikethrough", "bold", "italic", "underline"):
+            assert any(f"userEnteredFormat.textFormat.{prop}" in m for m in masks)
         # numberFormat must survive: ensure_headers sets date formats on the event-date
         # columns, and clearing those would break date parsing.
         assert not any("numberFormat" in m for m in masks)
+
+    def test_appended_row_keeps_its_position_hyperlink(self, client):
+        """
+        A mask naming the textFormat subtree replaces all of it, deleting
+        textFormat.link along with the inherited formatting. append() runs
+        USER_ENTERED, so Sheets has already evaluated the =HYPERLINK() and attached the
+        link by the time this runs — rows 518-573 were flattened to plain text exactly
+        that way. The mask must name its properties one by one.
+        """
+        client.add_job({
+            "company": "Uber",
+            "position": "SWE Intern",
+            "position_url": "https://example.com/jobs/1",
+        })
+
+        masks = self._repeat_cell_masks(client)
+        assert masks, "appended row must have its inherited formatting reset"
+        assert "userEnteredFormat.textFormat" not in masks
+        assert not any("userEnteredFormat.textFormat.link" in m for m in masks)
 
 
 # =============================================================================

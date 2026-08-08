@@ -1011,8 +1011,13 @@ class SheetsClient:
         each time a new one is introduced: the colour was reset here, strikethrough was
         not, so striking the bottom row of the sheet silently struck every job appended
         after it — rows 420-462 — and the Gmail matcher skips struck rows, so those jobs
-        became invisible to status updates. Clearing the whole textFormat covers
-        strikethrough, bold, italic and underline together.
+        became invisible to status updates. So strikethrough, bold, italic and underline
+        are all cleared together.
+
+        They are named individually, though, and the mask must not be collapsed to the
+        textFormat subtree: that also deletes textFormat.link, which is the hyperlink on
+        the Position cell rather than inherited formatting, and cost rows 518-573 theirs.
+        A property added to the payload has to be added to the mask by hand.
 
         numberFormat is deliberately left alone: ensure_headers() sets date formats on
         the event-date columns, and resetting those would break date parsing.
@@ -1045,7 +1050,18 @@ class SheetsClient:
                         }
                     }
                 },
-                "fields": "userEnteredFormat.textFormat",
+                # Named one by one rather than as the textFormat subtree: a mask naming a
+                # subtree replaces all of it, which deleted textFormat.link on every row
+                # appended between 2026-08-04 and 2026-08-08 (rows 518-573). append()
+                # runs USER_ENTERED, so Sheets evaluates the =HYPERLINK() and materializes
+                # the link a moment before this request would have wiped it. Adding a new
+                # inherited property here means adding it to this mask too.
+                "fields": (
+                    "userEnteredFormat.textFormat.strikethrough,"
+                    "userEnteredFormat.textFormat.bold,"
+                    "userEnteredFormat.textFormat.italic,"
+                    "userEnteredFormat.textFormat.underline"
+                ),
             }
         }]
 
