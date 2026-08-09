@@ -26,6 +26,7 @@ from src.eligibility import (
     EligibilityCheck,
     EligibilityJudge,
     EligibilityJudgment,
+    EligibilityUnavailable,
     JUDGED_DIMENSIONS,
 )
 from src.eligibility_log import load_disagreements, record_disagreement, summarize
@@ -117,24 +118,48 @@ class TestEvidenceValidation:
         assert result.eligible is False
         assert result.failing_check.evidence_verified is True
 
-    def test_rejection_on_invented_evidence_is_discarded(self, judge):
+    def test_rejection_on_invented_evidence_still_stands(self, judge):
         """
-        An invented quote is worse than a wrong bound: a bound is visible in a field
-        afterwards, a fabricated sentence is not.
+        The quote guard is gone. It was there to stop a rejection resting on a sentence
+        the posting never contained — but it never caught a real failure (gpt-4o-mini
+        rejected 23 of 24 qualified postings while quoting them accurately), and its only
+        remedy was handing the job to the code filters, which is the path being retired.
         """
         data = {"eligible": False,
                 "checks": [_check(evidence="Must be a PhD candidate in astrophysics")]}
         result = judge._build_judgment(data, POSTING, "raw")
 
-        assert result.usable is False
-        assert "not found in the posting" in result.discarded_reason
+        assert result.usable is True
+        assert result.eligible is False
 
-    def test_rejection_naming_no_failing_check_is_discarded(self, judge):
-        data = {"eligible": False, "checks": [_check(passes=True, evidence="")]}
+    def test_bare_verdict_stands_without_checks(self, judge):
+        """
+        The prompt returns {"eligible", "reason"} and nothing else. A rejection used to
+        be discarded when no check failed, which would now throw away every rejection
+        the model makes — the opposite of letting it decide.
+        """
+        data = {"eligible": False, "reason": "The posting requires an MBA."}
         result = judge._build_judgment(data, POSTING, "raw")
 
-        assert result.usable is False
-        assert "no check failed" in result.discarded_reason
+        assert result.usable is True
+        assert result.eligible is False
+        assert "requires an MBA" in result.reason()
+
+    def test_reason_is_read_as_the_blocking_reason(self, judge):
+        """`reason` is the current prompt's field; `blocking_reason` the older one."""
+        data = {"eligible": False, "reason": "Requires enrollment in Hong Kong."}
+        assert judge._build_judgment(data, POSTING, "raw").blocking_reason == (
+            "Requires enrollment in Hong Kong.")
+
+    def test_checks_are_still_parsed_when_a_response_carries_them(self, judge):
+        """The schema is no longer required, but a response using it is not discarded."""
+        data = {"eligible": False, "blocking_reason": "needs a PhD",
+                "checks": [_check(evidence="Pursuing a Bachelor's or Master's degree")]}
+        result = judge._build_judgment(data, POSTING, "raw")
+
+        assert result.usable is True
+        assert result.discarded_reason is None
+        assert result.failing_check.dimension == "class_standing"
 
     def test_whitespace_differences_still_verify(self, judge):
         """The scraped text wraps differently from the quote; only words should matter."""
@@ -150,15 +175,25 @@ class TestEvidenceValidation:
         assert result.usable is True and result.eligible is True
 
     def test_unjudged_dimensions_are_dropped(self, judge):
-        """job_type and season_year stay in code; a check for them is ignored."""
+        """job_type stays in code; a check for it is ignored."""
         data = {"eligible": True, "checks": [
-            _check(dimension="season_year", passes=True),
+            _check(dimension="job_type", passes=True),
             _check(dimension="class_standing", passes=True),
         ]}
         result = judge._build_judgment(data, POSTING, "raw")
 
         assert [c.dimension for c in result.checks] == ["class_standing"]
         assert all(d in JUDGED_DIMENSIONS for d in (c.dimension for c in result.checks))
+
+    def test_season_year_checks_are_kept(self, judge):
+        """The pass owns season_year now, so its check must survive _build_judgment."""
+        data = {"eligible": True, "checks": [
+            _check(dimension="season_year", passes=True),
+            _check(dimension="class_standing", passes=True),
+        ]}
+        result = judge._build_judgment(data, POSTING, "raw")
+
+        assert [c.dimension for c in result.checks] == ["season_year", "class_standing"]
 
 
 # =============================================================================
@@ -246,37 +281,83 @@ class TestModeRouting:
         )
         assert passed is True
 
-    def test_ai_mode_falls_back_when_judgment_is_unusable(self, user):
-        """A discarded judgment decides nothing — the code path takes over."""
-        bad = EligibilityJudgment(eligible=False, checks=[], usable=False,
-                                  discarded_reason="no check failed")
-        job = _job()
-        passed, _, _ = passes_hard_filters(user, job, judgment=bad, mode=ELIGIBILITY_MODE_AI)
-        assert passed is True
+    def test_no_judgment_raises_rather_than_falling_back(self, user):
+        """
+        An outage is not a verdict, and it must not become one. Deferring to the code
+        path would decide the job by the very checks the pass replaced — and since
+        extraction no longer produces the normalized bounds those checks read, they
+        would wave everything through on None.
+        """
+        job = _job(class_standing_range=ClassStandingRange(minimum="Graduate", maximum=None),
+                   class_standing_requirement="graduate students only")
+        with pytest.raises(EligibilityUnavailable):
+            passes_hard_filters(user, job, judgment=None, mode=ELIGIBILITY_MODE_AI)
 
-    def test_ai_mode_falls_back_when_there_is_no_judgment(self, user):
+    def test_unusable_judgment_raises_rather_than_falling_back(self, user):
+        bad = EligibilityJudgment(eligible=False, checks=[], usable=False,
+                                  discarded_reason="whatever the reason")
+        with pytest.raises(EligibilityUnavailable):
+            passes_hard_filters(user, _job(), judgment=bad, mode=ELIGIBILITY_MODE_AI)
+
+    def test_code_mode_is_unaffected_by_a_missing_judgment(self, user):
+        """Explicitly choosing code still means code, judgment or no judgment."""
         job = _job(class_standing_range=ClassStandingRange(minimum="Graduate", maximum=None),
                    class_standing_requirement="graduate students only")
         passed, _, category = passes_hard_filters(
-            user, job, judgment=None, mode=ELIGIBILITY_MODE_AI
+            user, job, judgment=None, mode=ELIGIBILITY_MODE_CODE
         )
         assert passed is False and category == "class_standing"
 
-    def test_mechanical_filters_still_run_in_ai_mode(self, user):
-        """job_type and season_year are code's job in every mode."""
+    def test_job_type_still_runs_in_ai_mode(self, user):
+        """job_type stays code's job in every mode — controlled vocabulary, never wrong."""
         passed, _, category = passes_hard_filters(
             user, _job(job_type="Full-Time"),
             judgment=self._passing_judgment(), mode=ELIGIBILITY_MODE_AI,
         )
         assert passed is False and category == "job_type"
 
-    def test_season_year_still_rejects_after_an_ai_pass(self, user):
+    def test_ai_pass_owns_season_year(self, user):
+        """
+        A cleared judgment settles season/year too — it is not re-checked in code.
+
+        The PNC posting named no term at all; extraction manufactured 2026 out of an
+        application window ("posted for two business days from 08/03/2026") and the
+        re-check rejected a job the pass had already cleared. Re-checking a dimension the
+        pass owns only lets the weaker input win, so the extracted field must not be able
+        to override the judgment here.
+        """
+        from src.ai_extractor import SeasonYearParsed
+
+        passed, _, _ = passes_hard_filters(
+            user, _job(season_year=None,
+                       season_year_parsed=SeasonYearParsed(season=None, years=[2026])),
+            judgment=self._passing_judgment(), mode=ELIGIBILITY_MODE_AI,
+        )
+        assert passed is True
+
+    def test_ai_mode_rejects_on_a_season_year_judgment(self, user):
+        """Owning the dimension means it can still reject on it — from the page, not a field."""
+        judgment = EligibilityJudgment(
+            eligible=False,
+            checks=[EligibilityCheck("season_year", False,
+                                     "Summer 2026 Internship", "targets Summer 2027")],
+            blocking_reason="posting is for Summer 2026",
+        )
+        passed, reason, category = passes_hard_filters(
+            user, _job(), judgment=judgment, mode=ELIGIBILITY_MODE_AI,
+        )
+        assert passed is False
+        assert category == "season_year"
+        assert "Summer 2026" in reason
+
+    def test_code_mode_still_enforces_season_year(self, user):
+        """The default is unchanged: without the pass, the extracted field still decides."""
         from src.ai_extractor import SeasonYearParsed
 
         passed, _, category = passes_hard_filters(
             user, _job(season_year="Summer 2026",
                        season_year_parsed=SeasonYearParsed(season="Summer", years=[2026])),
-            judgment=self._passing_judgment(), mode=ELIGIBILITY_MODE_AI,
+            judgment=self._passing_judgment(), mode=ELIGIBILITY_MODE_CODE,
         )
         assert passed is False and category == "season_year"
 

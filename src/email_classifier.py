@@ -166,8 +166,17 @@ class EmailClassifier:
 
         return result
 
-    def _classify_openai(self, prompt: str, max_tokens: int = 500) -> Optional[str]:
-        """Call OpenAI API to classify email."""
+    def _classify_openai(self, prompt: str) -> Optional[str]:
+        """
+        Call OpenAI API to classify email.
+
+        No completion cap is sent. The caps here were 500 for a classification and 900
+        for row disambiguation, sized for gpt-4o-mini's plain output. On the newer models
+        that budget also covers reasoning tokens, so a model that deliberates can spend
+        the whole allowance thinking and return empty text — a silent failure, where the
+        runaway output the cap guarded against would at least be visible. Verdicts run
+        about 67 tokens, so there is nothing to cap.
+        """
         client = self._get_openai_client()
 
         logger.debug(f"Calling OpenAI {self.config.openai_model}")
@@ -177,7 +186,6 @@ class EmailClassifier:
             model=self.config.openai_model,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.1,  # Low temperature for consistent classification
-            max_tokens=max_tokens,
         )
 
         elapsed = time.time() - start_time
@@ -188,8 +196,8 @@ class EmailClassifier:
 
         return None
 
-    def _classify_gemini(self, prompt: str, max_tokens: int = 500) -> Optional[str]:
-        """Call Gemini API to classify email."""
+    def _classify_gemini(self, prompt: str) -> Optional[str]:
+        """Call Gemini API to classify email. Uncapped, matching the OpenAI path."""
         client = self._get_gemini_client()
 
         logger.debug(f"Calling Gemini {self.config.gemini_model}")
@@ -200,7 +208,6 @@ class EmailClassifier:
             contents=prompt,
             config=genai_types.GenerateContentConfig(
                 temperature=0.1,
-                max_output_tokens=max_tokens,
             )
         )
 
@@ -340,11 +347,10 @@ class EmailClassifier:
 
         valid_rows = {c["row"] for c in candidates}
         try:
-            # Enumerating a verdict per candidate needs more room than a classification.
             if self.config.ai_provider == "openai":
-                raw = self._classify_openai(prompt, max_tokens=900)
+                raw = self._classify_openai(prompt)
             else:
-                raw = self._classify_gemini(prompt, max_tokens=900)
+                raw = self._classify_gemini(prompt)
         except Exception as e:
             # Never fatal: the caller falls back to flagging the email for review.
             logger.warning(f"Row disambiguation call failed: {e}")

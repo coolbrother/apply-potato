@@ -7,7 +7,7 @@ Usage:
 
 import pytest
 
-from src.config import UserProfile
+from src.config import UserProfile, ELIGIBILITY_MODE_CODE
 from src.ai_extractor import (
     ClassStandingRange,
     ExtractedJob,
@@ -648,7 +648,7 @@ class TestPassesHardFiltersStructured:
             class_standing_requirement=GRADUATE_VERB_REQUIREMENT,
             season_year="2026/2027",
         )
-        passed, reason, category = passes_hard_filters(self._user(), job)
+        passed, reason, category = passes_hard_filters(self._user(), job, mode=ELIGIBILITY_MODE_CODE)
         assert passed is True, f"Rejected by {category}: {reason}"
 
     def test_legacy_job_without_structured_fields_still_filters(self):
@@ -660,7 +660,7 @@ class TestPassesHardFiltersStructured:
             class_standing_requirement="Must be a Senior",
             season_year="Summer 2027",
         )
-        passed, reason, category = passes_hard_filters(self._user(), job)
+        passed, reason, category = passes_hard_filters(self._user(), job, mode=ELIGIBILITY_MODE_CODE)
         assert passed is False
         assert category == "class_standing"
 
@@ -674,7 +674,7 @@ class TestPassesHardFiltersStructured:
             class_standing_range=ClassStandingRange(minimum="Freshman", maximum="Sophomore"),
             season_year="Summer 2027",
         )
-        passed, reason, category = passes_hard_filters(self._user(), job)
+        passed, reason, category = passes_hard_filters(self._user(), job, mode=ELIGIBILITY_MODE_CODE)
         assert passed is False
         assert category == "class_standing"
         assert "above maximum" in reason
@@ -688,6 +688,6 @@ class TestPassesHardFiltersStructured:
             season_year="Fall 2027",
             season_year_parsed=SeasonYearParsed(season="Fall", years=[2027]),
         )
-        passed, reason, category = passes_hard_filters(self._user(), job)
+        passed, reason, category = passes_hard_filters(self._user(), job, mode=ELIGIBILITY_MODE_CODE)
         assert passed is False
         assert category == "season_year"

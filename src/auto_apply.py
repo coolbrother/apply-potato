@@ -28,6 +28,23 @@ from .ai_extractor import ExtractedJob
 
 logger = logging.getLogger(__name__)
 
+
+# Button texts tried, in order, to make the application form appear. Detection only ever
+# needs the form on screen — it never fills a field and never sends anything.
+#
+# Every entry must therefore mean "open the form". "Submit Application" was in this list
+# and does not: the match is a loose substring on the first hit, so a page with an inline
+# form and no Apply button would have had its submit button clicked by a service running
+# unattended. An empty submission would almost certainly fail validation, which is not a
+# guarantee worth relying on for an action that cannot be taken back.
+APPLY_BUTTON_TEXTS = (
+    "Apply Now",
+    "Apply for this job",
+    "Apply",
+    "Start Application",
+)
+
+
 def _sanitize_name(s: str, max_len: int = 50) -> str:
     """Sanitize a string for use as a folder/file name component."""
     s = re.sub(r'[^\w\s-]', '', s).strip()
@@ -317,7 +334,7 @@ class AutoApplyOrchestrator:
             candidates = []
             if apply_button:
                 candidates.append(apply_button)
-            candidates += ["Apply Now", "Apply for this job", "Apply", "Start Application", "Submit Application"]
+            candidates += list(APPLY_BUTTON_TEXTS)
 
             for btn_text in candidates:
                 try:
@@ -345,7 +362,7 @@ class AutoApplyOrchestrator:
                 candidates = []
                 if apply_button:
                     candidates.append(apply_button)
-                candidates += ["Apply Now", "Apply for this job", "Apply", "Start Application", "Submit Application"]
+                candidates += list(APPLY_BUTTON_TEXTS)
                 for btn_text in candidates:
                     try:
                         await scraper._page.get_by_text(btn_text, exact=False).first.click(timeout=3000)

@@ -1,343 +1,88 @@
-You are a job posting data extraction expert. Extract structured information from the job posting content provided.
+Extract structured data from this job posting.
 
 TODAY'S DATE: {today_date}
 
-CRITICAL INSTRUCTIONS:
-1. Return ONLY valid JSON - no explanations, no markdown code blocks, just raw JSON
-2. PRESERVE season/year in the title (e.g., "Summer 2026 Software Engineering Intern" - keep "Summer 2026")
-3. Use null for any field that cannot be determined from the content (not empty strings)
-4. For salary fields, use numbers only (no $, commas, or currency symbols)
-5. Be precise - only extract what is EXPLICITLY stated, don't infer or assume
-6. Do NOT hallucinate or make up information that is not in the posting
+Return ONLY raw JSON — no markdown fences, no commentary.
 
-MULTI-POSITION POSTINGS:
-If the job posting contains MULTIPLE distinct positions/roles (e.g., "5 different internship tracks" or
-multiple job titles each with their own "Skills Needed" section), return a JSON ARRAY of job objects.
-Each job in the array should have:
-- Its own title (e.g., "AI/Data Science Research Intern" not the umbrella title)
-- Its own required_skills and preferred_skills (from that specific position's skills section)
-- Its own job_category (based on that specific role)
-- Shared fields copied to each: company, locations, salary, season_year, work_model, etc.
-
-IMPORTANT: Only extract the individual positions - do NOT extract the main page title/umbrella title as a separate job.
-For example, if the page title is "Summer 2026 Internship - Technology & Digital Solutions" and lists 5 specific intern roles underneath, only extract the 5 specific roles, NOT the umbrella title.
-
-Example: A posting with 5 intern tracks should return an array of 5 job objects.
-If there is only ONE position, return a single job object (not an array).
-
-Extract the following fields:
+Angle brackets describe what to put in a field. Never copy the description itself —
+replace it with the value read off the posting, or null.
 
 {
-    "company": "Company name",
-    "company_job_id": "Internal job ID if visible (e.g., REQ12345)",
-    "title": "Full job title INCLUDING season/year if present",
-    "job_type": "Internship | Full-Time | Part-Time | Contract",
-    "work_model": "Remote | Hybrid | On-site | null if not specified",
+    "company": "<the hiring company's name>",
+    "title": "<full job title, exactly as printed on the page>",
+    "job_type": "<exactly one of: Internship, Full-Time, Part-Time, Contract>",
+    "job_category": "<exactly one of: Software Engineering, Product Management, Data Science/AI/ML, Quantitative Finance, Hardware Engineering, Design, Other>",
+    "work_model": "<exactly one of: Remote, Hybrid, On-site — or null>",
     "is_remote": true | false | null,
-    "locations": ["City, State", "City, State"],
-    "salary_min": number or null,
-    "salary_max": number or null,
-    "salary_period": "hourly | monthly | yearly | null",
-    "currency": "USD | EUR | etc. or null",
-    "class_standing_requirement": "Exact text from posting (e.g., 'entering junior year or senior year') or null",
-    "class_standing_range": {
-        "minimum": "Freshman | Sophomore | Junior | Senior | Graduate | PhD | null",
-        "maximum": "Freshman | Sophomore | Junior | Senior | Graduate | PhD | null"
-    },
-    "graduation_timeline": "Specific requirement like 'Must graduate by June 2026' or null",
-    "graduation_window": {
-        "earliest": "YYYY-MM or null",
-        "latest": "YYYY-MM or null"
-    },
-    "season_year": "Summer 2025 | Fall 2025 | Spring 2026 | null",
-    "season_year_parsed": {
-        "season": "Summer | Fall | Spring | Winter | null",
-        "years": [2026, 2027]
-    },
-    "work_authorization": "US Citizens Only | Sponsorship Available | Must be authorized | null",
-    "sponsorship_available": true | false | null,
-    "gpa_requirement": number or null (e.g., 3.0, 3.5),
-    "degree_requirement": {
-        "level": "Masters | PhD | MBA | null",
-        "type": "required | preferred | null"
-    },
-    "job_category": "Software Engineering | Product Management | Data Science/AI/ML | Quantitative Finance | Hardware Engineering",
-    "apply_url": "Direct application URL if different from page URL",
-    "posted_date": "YYYY-MM-DD or null",
-    "deadline": "YYYY-MM-DD or null",
-    "required_skills": ["skill1", "skill2"],
-    "preferred_skills": ["skill1", "skill2"],
-    "required_majors": [],
-    "description_summary": "2-3 sentence summary of the role"
+    "locations": ["<City, State>"],
+    "salary_min": <number or null>,
+    "salary_max": <number or null>,
+    "salary_period": "<exactly one of: hourly, monthly, yearly — or null>",
+    "currency": "<ISO code such as USD, or null>",
+    "season_year": "<the term the work happens in, e.g. Summer 2027, or null>",
+    "posted_date": "<YYYY-MM-DD or null>",
+    "deadline": "<YYYY-MM-DD or null>",
+    "class_standing_requirement": "<the sentence saying who may apply, or null>",
+    "work_authorization": "<exact text about citizenship or sponsorship, or null>",
+    "gpa_requirement": <number or null>,
+    "required_majors": ["<major named in the posting>"],
+    "required_skills": ["<requirement, verbatim>"],
+    "preferred_skills": ["<preferred requirement, verbatim>"]
 }
 
-FIELD GUIDELINES:
+RULES
 
-class_standing_requirement:
-- Extract the EXACT text from the posting about year-level OR enrollment/credit-hour requirements
-- This includes year-level language (Junior, Senior) AND enrollment/credit requirements
-- Do NOT simplify or normalize - preserve the original wording
-- Examples:
-  - "entering junior year or senior year" → "entering junior year or senior year" (NOT "Junior")
-  - "rising senior" → "rising senior" (NOT "Senior")
-  - "must be a Junior or Senior" → "must be a Junior or Senior"
-  - "penultimate year" → "penultimate year"
-  - "Must be enrolled in a college degree program and have earned 60 credit hours by the end of May 2026" → copy that exact text (enrollment + credit-hour requirement)
-  - "Must be currently enrolled in a Bachelor's program" → copy that exact text
-- Split a degree requirement in two. The LEVEL says who may apply and belongs here;
-  the FIELD is a major and goes in required_majors:
-  - "Pursuing a Bachelor's or Master's degree in Computer Science, Mathematics, or a
-    related quantitative field"
-    → class_standing_requirement: "Pursuing a Bachelor's or Master's degree"
-    → required_majors: ["Computer Science", "Mathematics"]
-  - "Must be enrolled in a PhD program in Statistics"
-    → class_standing_requirement: "Must be enrolled in a PhD program"
-    → required_majors: ["Statistics"]
-- If no year-level, enrollment or degree-level requirement is mentioned, use null
+1. Extract only what the posting explicitly states. Never infer, guess or fill a gap.
+   Use null (not "") for anything absent. An empty list for absent lists.
 
-- WHICH SENTENCE to copy, when the posting has several. Pick the one that says WHO MAY
-  APPLY — the sentence naming a year level, an enrollment status, or a degree level.
-  A line labelled "Eligibility:" is almost always that sentence.
-  - PREFER: "Eligibility: Current Bachelor's, Master's, or PhD students pursuing degrees
-    in rigorous, highly technical fields"
-  - NOT: "Excellent academic background from a rigorous computer science or engineering
-    program graduating in Fall 2027 or later" — this describes academic QUALITY and a
-    GRADUATION DATE, not who may apply. The graduation date belongs in
-    graduation_timeline; nothing in it belongs here.
-  - A sentence about grades, rigor, or "strong background" is never a class standing.
-  - A sentence that opens with "Graduating ..." and names dates is a GRADUATION
-    TIMELINE, never a class standing, however the posting orders its bullets:
-    - "Graduating between December 2027 and July 2028" alongside "Pursuing a Bachelor's
-      or Master's degree" → this field takes the Pursuing sentence;
-      graduation_timeline takes the Graduating sentence.
-  - If one sentence states who may apply and another states when they graduate, this
-    field takes the FIRST and graduation_timeline takes the second.
+1a. Fields whose description says "exactly one of" are closed sets. Reply with one of the
+    listed values character for character — "Part-Time", never "Part time" or "part-time".
+    If none of the listed values fit, use null.
 
-class_standing_range:
-- This is the NORMALIZED version of class_standing_requirement. Keep class_standing_requirement
-  as the exact original text; put your interpretation here.
-- Allowed values, ordered from least to most senior:
-  Freshman < Sophomore < Junior < Senior < Graduate < PhD
-- "minimum" = the LEAST senior standing a student may hold and still be eligible
-- "maximum" = the MOST senior standing still eligible
+1b. job_type is what the ROLE is, not what an ATS field on the page happens to say.
+    If the title or body calls it an intern, internship, co-op or summer analyst
+    programme, job_type is "Internship" — even where the page also shows
+    "Job Type: Part time" or "Employment type: Temporary", which is how Workday and
+    Greenhouse label student roles. Those hour/duration labels never override the role.
 
-- How to read common phrasings:
-  - "rising X" means the student is CURRENTLY one year below X
-    - "rising senior" → minimum: "Junior"
-    - "rising junior" → minimum: "Sophomore"
-  - "entering X year" also means CURRENTLY one year below X
-    - "entering junior year" → minimum: "Sophomore"
-  - "penultimate year" = second-to-last year; assume a 4-year program → minimum: "Junior"
-  - "approaching their final year" = one year before the final year → minimum: "Junior"
-  - "final year" / "last year" → minimum: "Senior"
-  - A list of acceptable years sets BOTH bounds from the lowest and highest named
-    - "must be a Junior or Senior" → minimum: "Junior", maximum: "Senior"
-    - "freshmen and sophomores only" → minimum: "Freshman", maximum: "Sophomore"
-  - Open-ended language sets NO maximum
-    - "Junior or above" → minimum: "Junior", maximum: null
-  - Enrollment-only requirements mean ANY currently enrolled student qualifies
-    - "currently enrolled", "current student", "matriculated in an undergraduate program",
-      "must be pursuing a bachelor's degree" → minimum: "Freshman", maximum: null
-    - "At the end of the internship, you must return to school to continue your education or the
-      internship must be the last requirement for you to graduate" → minimum: "Freshman",
-      maximum: null (this requires being a student; it sets NO year level)
+2. Text fields are copied VERBATIM — title, class_standing_requirement,
+   work_authorization, and every skill. No paraphrasing, shortening or tidying.
 
-- KEY RULE — a list of DEGREE LEVELS is not a list of year levels:
-  - There is no allowed value for "Bachelor's", because every undergraduate year
-    (Freshman..Senior) is a Bachelor's student. Encode "Bachelor's students are eligible"
-    as minimum: "Freshman".
-  - Such a list is an OR — a student qualifies by matching ANY member — so take the
-    minimum from the LEAST senior degree named, never the most senior.
-    - "Current Bachelor's, Master's, or PhD students" → minimum: "Freshman", maximum: null
-    - "open to undergraduate and graduate students" → minimum: "Freshman", maximum: null
-    - "Bachelor's or Master's students" → minimum: "Freshman", maximum: null
-  - Naming Master's or PhD alongside Bachelor's WIDENS eligibility; it never narrows it.
-    Returning minimum: "Graduate" for a list that includes Bachelor's is always WRONG —
-    it rejects the undergraduates the posting explicitly invited.
-  - The minimum rises only when NO undergraduate degree is named at all:
-    - "Master's or PhD students only" → minimum: "Graduate", maximum: "PhD"
-    - "must be enrolled in a PhD program" → minimum: "PhD", maximum: null
+3. title is the role's name as printed. Do not add a season, a year, or a location
+   the page does not put in the title itself.
 
-- KEY RULE — "graduate" as a VERB is not a class standing:
-  - Only the NOUN sense means the Graduate level: "graduate student", "graduate program",
-    "graduate degree", "enrolled in graduate school" → "Graduate"
-  - The VERB describes finishing a degree and says NOTHING about year level:
-    "to graduate", "before you graduate", "the last requirement for you to graduate",
-    "you will graduate in 2027" → do NOT set "Graduate" because of these
-  - This includes the -ing form paired with a date, which is a GRADUATION TIMELINE:
-    "graduating in Fall 2027 or later", "graduating in 2028", "graduating between May
-    2027 and June 2028" → do NOT set "Graduate"; if the posting says nothing else about
-    year level, class_standing_range is null/null and the date goes in graduation_timeline
-  - "graduate students only" → minimum: "Graduate", maximum: "PhD"
+4. season_year is the term the WORK happens in — "Summer 2027 Internship",
+   "runs June-August 2027", "Fall 2026 co-op".
+   It is NOT built from a date about the posting. If the only years on the page are
+   these, season_year is null:
+     - application windows — "posted for two business days from 08/03/2026"
+     - posting or requisition dates — "Posted: 08/03/2026", "R231441-1"
+     - copyright lines, footers, "last updated" stamps
+     - a graduation date inside a requirement
 
-- KEY RULE — only set "maximum" when the posting genuinely EXCLUDES more senior students:
-  - Set it for restrictive wording: "only", "exclusively", "must be a X", or a closed list
-    of acceptable years ("open to sophomores and juniors")
-  - Do NOT set it for descriptive or welcoming wording: "rising seniors encouraged to apply",
-    "ideal for juniors", "we especially welcome seniors" → maximum: null
-  - When in doubt, use null. A wrong maximum silently rejects a job the applicant could have got.
+5. class_standing_requirement is the sentence naming a year level, an enrollment
+   status, or a degree level — who may apply. A sentence about grades, rigor or
+   "strong background" is not one. A sentence about when someone graduates is not one.
+   Take the degree LEVEL here and put the FIELD in required_majors:
+     "Pursuing a Bachelor's degree in Computer Science"
+       -> class_standing_requirement: "Pursuing a Bachelor's degree"
+       -> required_majors: ["Computer Science"]
 
-- KEY RULE — null means "the posting states no such requirement", NOT "anyone qualifies":
-  - If the posting requires enrollment but names no year level, that is minimum: "Freshman"
-    (any student), NOT null
-  - Use null only when the posting is genuinely silent about class standing
+6. Skills: extract EVERY item from the Requirements / Qualifications / Skills sections,
+   including parenthetical tools — "Experience with scripting (Python, ServiceNow)"
+   keeps the parenthetical. Do not skip items that look administrative.
+   A skill marked "(preferred)", "nice to have", "bonus", "a plus" or "ideally" goes in
+   preferred_skills; everything else goes in required_skills.
 
-graduation_timeline:
-- This field is ONLY for when someone must COMPLETE/FINISH their degree (graduation date)
-- Copy the exact wording if there's a specific graduation deadline
-- Examples of VALID graduation requirements:
-  - "Must graduate between Dec 2025 and June 2026" → "Must graduate between Dec 2025 and June 2026"
-  - "Graduating in Spring 2026" → "Graduating in Spring 2026"
-  - "Expected graduation by May 2026" → "Expected graduation by May 2026"
-- IMPORTANT: Enrollment requirements are NOT graduation requirements:
-  - "Must be enrolled in a degree program" → null (this is enrollment, not graduation)
-  - "Must have earned 60 credit hours by May 2026" → null (this is enrollment status, not graduation)
-  - "Must be enrolled in a college degree program and have earned 60 credit hours by the end of May 2026" → null (still enrolled = still a student = NOT graduating)
-  - "Must be currently pursuing a degree" → null (this means still a student)
-- KEY RULE: If the sentence says the person must be ENROLLED or PURSUING a degree, they are STILL A STUDENT. A date in that sentence (e.g., "by May 2026") refers to a credit-hour milestone, NOT a graduation date. Do NOT extract it as graduation_timeline.
-- graduation_timeline is ONLY for language like "graduating in", "will graduate by", "expected graduation", "must complete degree by"
-- If no graduation deadline mentioned, use null
+7. Salary is numbers only, no symbols or commas. "$25-35/hr" -> salary_min 25,
+   salary_max 35, salary_period "hourly".
 
-graduation_window:
-- This is the NORMALIZED version of graduation_timeline, as a date range in "YYYY-MM" form.
-  Keep graduation_timeline as the exact original text; put your interpretation here.
-- "earliest" = the SOONEST the student may graduate and still be eligible
-- "latest"   = the LATEST the student may graduate and still be eligible
-- Either bound may be null, meaning that side is unbounded.
+8. posted_date: convert a relative date using TODAY'S DATE above. "Posted 4 Days Ago"
+   with today 2026-08-08 -> "2026-08-04".
 
-- How to read common phrasings:
-  - Deadline language — "by", "before", "no later than", "must graduate by" — sets "latest"
-    - "Must graduate by June 2026" → {"earliest": null, "latest": "2026-06"}
-  - Floor language — "or later", "and later", "after", "no earlier than" — sets "earliest"
-    - "Graduation date December 2027 or later" → {"earliest": "2027-12", "latest": null}
-    - The -ing form reads the same way. "or later" is floor language wherever it appears:
-      - "graduating in Fall 2027 or later" → {"earliest": "2027-12", "latest": null}
-      - "graduating in 2028 or beyond" → {"earliest": "2028-05", "latest": null}
-    - "or later" ALWAYS sets "earliest" and leaves "latest" null. Putting such a date in
-      "latest" inverts the requirement and rejects every student the posting invited.
-  - A range sets both
-    - "Must graduate between Dec 2025 and June 2026" → {"earliest": "2025-12", "latest": "2026-06"}
-  - KEY RULE — a NEGATED "before" is a FLOOR, not a deadline. Read the whole phrase, not the
-    word "before" on its own:
-    - "Not graduating before May 2026" → {"earliest": "2026-05", "latest": null}
-      (this means graduate ON or AFTER May 2026 — it is NOT a deadline of May 2026)
-  - Enrollment during a period means the student must NOT have graduated before that period ends,
-    so it sets "earliest":
-    - "Must be enrolled during Summer 2026" → {"earliest": "2026-08", "latest": null}
-  - A bare date with no qualifying word defaults to a DEADLINE
-    - "Graduation: May 2026" → {"earliest": null, "latest": "2026-05"}
-  - If the posting states no graduation requirement → {"earliest": null, "latest": null}
-
-- When a term or season is named instead of a month, convert it using this convention:
-  - Spring → May (05)
-  - Summer → August (08)
-  - Fall   → December (12)
-  - Winter → December (12)
-  - A bare year with no season → May (05)
-- The same distinction from graduation_timeline applies here: enrollment and credit-hour
-  milestones are NOT graduation dates. If a sentence says the person must be ENROLLED or
-  PURSUING a degree, do not treat its date as a graduation deadline.
-
-season_year:
-- Extract EXACTLY as written in the posting, no modification
-- Do NOT infer, guess, or add information
-- If no season/year mentioned, use null
-
-season_year_parsed:
-- This is the NORMALIZED version of season_year. Keep season_year as the exact original text;
-  put your interpretation here.
-- "season" = one of Summer | Fall | Spring | Winter, or null if the posting names no season
-- "years"  = EVERY calendar year the term covers, as 4-digit integers, or [] if none is named
-- KEY RULE — an academic-year span names EVERY year it covers, not just the first:
-  - "2026/2027"        → {"season": null, "years": [2026, 2027]}
-  - "2026-2027"        → {"season": null, "years": [2026, 2027]}
-  - "Summer 2026/2027" → {"season": "Summer", "years": [2026, 2027]}
-- Expand two-digit shorthand to full years:
-  - "2026/27"  → {"season": null, "years": [2026, 2027]}
-  - "AY26-27"  → {"season": null, "years": [2026, 2027]}
-- Other examples:
-  - "Summer 2026"       → {"season": "Summer", "years": [2026]}
-  - "Summer Internship" → {"season": "Summer", "years": []}
-  - season_year is null → {"season": null, "years": []}
-
-work_authorization:
-- Extract EXACTLY as written in the posting, no modification
-- If sponsorship is mentioned, also set sponsorship_available: true or false
-- If no work authorization mentioned, use null
-
-salary:
-- Extract hourly rate for internships, annual for full-time
-- "$25-35/hr" → salary_min: 25, salary_max: 35, salary_period: "hourly"
-- "$150,000 - $200,000" → salary_min: 150000, salary_max: 200000, salary_period: "yearly"
-
-posted_date:
-- If the posting shows a RELATIVE date like "Posted 4 Days Ago" or "Posted Yesterday", calculate the actual date using TODAY'S DATE above
-- Example: If TODAY'S DATE is 2025-12-27 and posting says "Posted 4 Days Ago" → "2025-12-23"
-- Example: If TODAY'S DATE is 2025-12-27 and posting says "Posted Yesterday" → "2025-12-26"
-- If the posting shows an absolute date like "December 20, 2025", convert to YYYY-MM-DD format
-- Return in YYYY-MM-DD format
-- If no date information available, use null
-
-degree_requirement:
-- Extract EXACTLY as written in the posting for the level field
-- Set type to "required" or "preferred" based on context
-- If no advanced degree (Masters/PhD/MBA) mentioned, use null for level
-- No degree requirement mentioned → level: null, type: null
-
-job_category:
-- Classify the job into ONE of these categories based on title and description:
-  - "Software Engineering" - SWE, developer, engineer, frontend, backend, full-stack, mobile, web, DevOps, SRE
-  - "Product Management" - PM, product manager, program manager, TPM
-  - "Data Science/AI/ML" - Data scientist, ML engineer, AI researcher, data analyst, data engineer
-  - "Quantitative Finance" - Quant, quantitative analyst, trading, risk analyst, financial engineer
-  - "Hardware Engineering" - Hardware engineer, chip design, ASIC, FPGA, embedded systems, electrical engineer
-  - "Design" - UI/UX designer, product designer, UX researcher, visual designer, interaction designer
-  - "Other" - Any role that doesn't fit the above categories
-- Use the MOST specific match based on job title first, then description
-
-required_majors:
-- Extract EXACTLY what the job posting says about required majors/degrees
-- Record the LITERAL text including "or equivalent", "or related field", etc.
-- "Computer Science or equivalent degree" → ["Computer Science or equivalent degree"]
-- "Bachelor's degree required" with no specific major → use empty array []
-- If no specific majors are mentioned, use empty array []
-- Do NOT simplify, shorten, or interpret - just record what the website says
-
-required_skills / preferred_skills:
-- Extract the COMPLETE skill text INCLUDING any parenthetical content with tools/technologies
-- CORRECT: "Experience with automation tools or scripting (Python, ServiceNow, or low-code platforms)"
-- WRONG: "Experience with automation tools or scripting" (missing the specific tools!)
-- CORRECT: "Data analysis and visualization skills (Excel, Power BI, Tableau)"
-- WRONG: "Data analysis and visualization skills" (missing the specific tools!)
-- The parenthetical content contains specific tools/technologies CRITICAL for resume matching
-- Do NOT summarize, shorten, or paraphrase skills - extract them VERBATIM from the posting
-- Copy the EXACT text as it appears, including all parentheses and their contents
-- CRITICAL: Extract EVERY list item from Requirements/Qualifications/Skills sections
-- List items may be formatted as bullets (•), dashes (-), numbers (1, 2, 3), or letters (a, b, c)
-- Include ALL items even if they look like:
-  - Attendance policies ("This position requires mandatory attendance...")
-  - Location requirements ("Must work from office...")
-  - Administrative requirements
-- Count the list items in each section and ensure you extract the same count
-- Do NOT filter, skip, or omit ANY items
-
-Required vs Preferred classification:
-For EACH skill, check if it contains preference markers BEFORE deciding which array:
-- If skill contains "(preferred)", "nice to have", "bonus", "a plus", "ideally" → put in preferred_skills
-- If skill does NOT contain any preference marker → put in required_skills
-
-Examples:
-- "Experience with healthcare data (preferred)" → preferred_skills (contains "(preferred)")
-- "Native mobile development experience (preferred)" → preferred_skills (contains "(preferred)")
-- "Strong foundation in machine learning" → required_skills (no marker)
-- "Programming experience in Python or R" → required_skills (no marker)
-
-locations:
-- List all mentioned locations
-- Include "Remote" if remote work is mentioned
-- Use format "City, State" for US locations
+9. If the page lists SEVERAL distinct roles, return a JSON array with one object per
+   role, each with its own title and skills, sharing company/salary/location/season.
+   Do not emit the umbrella page title as its own role. One role -> one object.
 
 JOB POSTING CONTENT:
 {content}
-
-Respond with ONLY the JSON object, no other text.

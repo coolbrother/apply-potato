@@ -26,14 +26,37 @@ from google.api_core import exceptions as google_exceptions
 from google.genai import types as genai_types
 from openai import OpenAI, APIError, APITimeoutError, RateLimitError
 
-from .config import Config, UserProfile, get_config
+from .config import Config, UserProfile, get_config, openai_token_limit
 
 logger = logging.getLogger(__name__)
 
 
-# The dimensions this pass owns. job_type and season_year stay in filters.py: they are
-# unambiguous comparisons over well-formed fields and they already work.
-JUDGED_DIMENSIONS = ("class_standing", "graduation_timeline", "work_authorization")
+class EligibilityUnavailable(RuntimeError):
+    """
+    No verdict could be obtained for a posting.
+
+    Raised instead of quietly deferring to filters.py. An API outage is not the model
+    saying "no", and the code path is no longer a second opinion worth taking — it is the
+    behaviour this replaced. The caller leaves the job undecided and uncached so the next
+    run tries again.
+    """
+
+
+# The dimensions this pass owns. job_type stays in filters.py: it compares against a
+# controlled vocabulary and has never misfired.
+#
+# season_year was here for the same reason and had to move. The comparison in filters.py
+# is sound; its input is not. A PNC posting naming no term at all was rejected as
+# "job covers ['2026']" because extraction read the year out of an application window —
+# "posted for two business days from 08/03/2026" — and a comparison cannot be more
+# reliable than the field it reads. This pass sees the page, so it can tell a program
+# term from a posting date.
+JUDGED_DIMENSIONS = (
+    "class_standing",
+    "graduation_timeline",
+    "work_authorization",
+    "season_year",
+)
 
 # Whitespace differs freely between the scraped text and a quoted span, so evidence is
 # compared with runs of whitespace collapsed.
@@ -123,6 +146,9 @@ class EligibilityJudge:
             "{degree_level}": getattr(user, "degree_level", "") or "(not specified)",
             "{major}": ", ".join(majors) if majors else "(not specified)",
             "{work_authorization}": getattr(user, "work_authorization", "") or "(not specified)",
+            # "(no preference)" and not "(not specified)": the model must read this as
+            # nothing to check rather than as a missing value it should guess at.
+            "{target_season_year}": getattr(user, "target_season_year", "") or "(no preference — do not check season/year)",
             "{content}": content,
         }
         for token, value in values.items():
@@ -153,8 +179,8 @@ class EligibilityJudge:
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.1,
         }
-        if self.config.openai_max_tokens:
-            params["max_tokens"] = self.config.openai_max_tokens
+        params.update(openai_token_limit(self.config.openai_model,
+                                         self.config.openai_max_tokens))
         response = client.chat.completions.create(**params)
         if response.choices and response.choices[0].message.content:
             return response.choices[0].message.content.strip()
@@ -228,7 +254,9 @@ class EligibilityJudge:
                 evidence_verified=verified,
             ))
 
-        blocking = data.get("blocking_reason")
+        # "reason" is what the current prompt returns; "blocking_reason" is the older
+        # per-dimension name. Either carries the sentence shown in the sheet.
+        blocking = data.get("blocking_reason") or data.get("reason")
         judgment = EligibilityJudgment(
             eligible=bool(data.get("eligible")),
             checks=checks,
@@ -236,19 +264,19 @@ class EligibilityJudge:
             raw_response=raw,
         )
 
-        # A "not eligible" answer has to name a failing check, and that check has to
-        # quote the posting. Anything else is discarded rather than trusted.
-        if not judgment.eligible:
-            failing = [c for c in checks if not c.passes]
-            if not failing:
-                judgment.usable = False
-                judgment.discarded_reason = "said not eligible but no check failed"
-            elif not any(c.evidence_verified for c in failing):
-                quotes = "; ".join(c.evidence[:60] for c in failing) or "(none)"
-                judgment.usable = False
-                judgment.discarded_reason = (
-                    f"rejection evidence not found in the posting: {quotes}"
-                )
+        # Every parsed verdict stands. A rejection used to be discarded unless it named a
+        # failing check whose quote appeared verbatim in the posting — a guard against
+        # rejecting on an invented sentence, which then handed the job to filters.py.
+        #
+        # Both halves were wrong. The guard never caught a real failure: gpt-4o-mini
+        # rejected 23 of 24 qualified postings while quoting them accurately, so every bad
+        # rejection verified cleanly and passed through. And the current prompt returns a
+        # bare verdict with no checks at all, so the rule would have discarded every
+        # rejection the model makes.
+        #
+        # There is no path from here back to the code filters. A verdict that cannot be
+        # obtained is raised as EligibilityUnavailable instead, so the job is retried
+        # rather than decided by something else.
 
         if not judgment.usable:
             logger.warning(f"Eligibility judgment discarded — {judgment.discarded_reason}")

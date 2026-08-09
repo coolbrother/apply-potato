@@ -44,7 +44,7 @@ Two independent entry points (`scrape_jobs.py`, `check_gmail.py`) share the `src
 2. **Dedup** — `Deduplicator` checks three caches: Sheets URLs already added, `filtered_jobs.json` (previously rejected), `seen_sources.json` (source URLs with TTL). Skip if already seen.
 3. **Scrape** — `PlaywrightScraper` (persistent headed Chrome, anti-detection) fetches the job page and returns `(content, final_url, is_blocked)`.
 4. **Extract** — `AIExtractor` calls OpenAI or Gemini with `prompts/job_extraction.txt` and returns one or more `ExtractedJob` dataclass instances (20+ fields).
-5. **Filter** — `passes_hard_filters()` in `filters.py` applies binary eligibility checks (class standing, graduation timeline, work auth, job type, season/year). Failures go into `filtered_jobs.json`.
+5. **Filter** — `passes_hard_filters()` in `filters.py`. Under the default `ELIGIBILITY_MODE=ai`, `eligibility.py` reads the whole page and answers "can this person apply?", and its verdict is final; only `job_type` is still checked in code. Set `ELIGIBILITY_MODE=code` to use the old binary checks (class standing, graduation timeline, work auth, season/year) instead. Failures go into `filtered_jobs.json`.
 6. **Score** — `calculate_fit_score()` in `scoring.py` returns 0–100 with notes (informational only, does not gate).
 7. **Sync** — `SheetsClient.add_job()` writes a row to Google Sheets.
 8. **Notify** — If a dream company job, Discord webhook fires. Optionally, `AutoApplyOrchestrator` detects form fields and generates tailored docs.
@@ -83,7 +83,9 @@ Single `.env` file (see `.env.example`). `get_config()` is a module-level single
 | `src/newsletter_parser.py` | Parse newsletter HTML from Gmail |
 | `src/scraper.py` | Playwright browser, anti-detection, special site handling (Simplify, Greenhouse) |
 | `src/ai_extractor.py` | OpenAI/Gemini job extraction (20+ fields), retry logic |
-| `src/filters.py` | Hard eligibility filters (binary) |
+| `src/filters.py` | Hard eligibility filters (binary); only `job_type` runs under `ELIGIBILITY_MODE=ai` |
+| `src/eligibility.py` | AI eligibility verdict from the raw page — owns the decision in `ai` mode |
+| `src/eligibility_log.py` | Records code-vs-AI disagreements in `shadow` mode |
 | `src/scoring.py` | Soft fit score 0–100 |
 | `src/deduplication.py` | URL normalization + three-tier caching |
 | `src/sheets.py` | Job-database CRUD (`GOOGLE_SHEET_ID`), 22-column schema (A–V, derived from `COLUMNS`), date parsing/dedupe helpers, color formatting |

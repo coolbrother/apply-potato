@@ -23,6 +23,29 @@ ELIGIBILITY_MODES = (
 )
 
 
+# OpenAI renamed the completion cap from max_tokens to max_completion_tokens for its
+# newer families. Sending the old name is a hard 400, not a warning, so switching
+# OPENAI_MODEL to gpt-5.4-nano broke extraction, eligibility and email classification at
+# once — every caller had the name hardcoded. It lives here so there is one place to fix
+# when the next family lands.
+_MAX_COMPLETION_TOKEN_PREFIXES = ("gpt-5", "o1", "o3", "o4")
+
+
+def openai_token_limit(model: str, limit: Optional[int]) -> Dict[str, int]:
+    """
+    The completion-cap keyword argument this model expects.
+
+    Returns an empty dict when no cap is configured, so callers can splat it
+    unconditionally and let the model use its own default.
+    """
+    if not limit:
+        return {}
+    name = ("max_completion_tokens"
+            if str(model or "").startswith(_MAX_COMPLETION_TOKEN_PREFIXES)
+            else "max_tokens")
+    return {name: limit}
+
+
 @dataclass
 class GitHubRepo:
     """GitHub repository configuration."""
@@ -351,7 +374,7 @@ def load_config(env_path: Optional[Path] = None) -> Config:
     # a typo here must not take the pipeline down, and falling back to "code" leaves
     # the filters fully enforced. Silently accepting the typo is the one outcome to
     # avoid, so it warns loudly.
-    eligibility_mode = _get_optional("ELIGIBILITY_MODE", ELIGIBILITY_MODE_CODE).strip().lower()
+    eligibility_mode = _get_optional("ELIGIBILITY_MODE", ELIGIBILITY_MODE_AI).strip().lower()
     if eligibility_mode not in ELIGIBILITY_MODES:
         print(
             f"WARNING: ELIGIBILITY_MODE must be one of {', '.join(sorted(ELIGIBILITY_MODES))}, "

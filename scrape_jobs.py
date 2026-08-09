@@ -44,7 +44,7 @@ from src.scraper import PlaywrightScraper
 from src.ai_extractor import AIExtractor, ExtractedJob
 from src.deduplication import DeduplicationChecker, get_dedup_checker, normalize_url
 from src.filters import passes_hard_filters
-from src.eligibility import get_eligibility_judge
+from src.eligibility import EligibilityUnavailable, get_eligibility_judge
 from src.eligibility_log import record_disagreement
 from src.scoring import calculate_fit_score
 from src.sheets import SheetsClient, get_sheets_client
@@ -142,6 +142,7 @@ class JobScraper:
             "filtered_out": 0,
             "jobs_added": 0,
             "eligibility_disagreements": 0,
+            "eligibility_unavailable": 0,
         }
 
     def close(self):
@@ -407,9 +408,20 @@ class JobScraper:
             # shared across every position on it — a multi-position posting states its
             # eligibility once, so judging each position separately would pay for the
             # same answer repeatedly.
-            passed, reason, category = passes_hard_filters(
-                self.config.user, extracted, judgment=judgment, mode=self.eligibility_mode
-            )
+            try:
+                passed, reason, category = passes_hard_filters(
+                    self.config.user, extracted, judgment=judgment, mode=self.eligibility_mode
+                )
+            except EligibilityUnavailable as e:
+                # No verdict, so no decision. Returning here skips mark_as_filtered and
+                # mark_source_seen, leaving the posting to be picked up again rather than
+                # cached as rejected on the strength of an outage.
+                logger.warning(
+                    f"  Eligibility unavailable for {extracted.company} - {e}; "
+                    f"leaving undecided for a later run"
+                )
+                self.stats["eligibility_unavailable"] += 1
+                return "Failed (eligibility unavailable)"
             self._record_eligibility_disagreement(
                 extracted, final_url, judgment, passed, reason, category
             )
@@ -670,6 +682,11 @@ class JobScraper:
         logger.info(f"  Filtered out: {self.stats['filtered_out']}")
         if self.eligibility_mode == ELIGIBILITY_MODE_SHADOW:
             logger.info(f"  Eligibility disagreements: {self.stats['eligibility_disagreements']}")
+        if self.stats["eligibility_unavailable"]:
+            logger.warning(
+                f"  Eligibility unavailable (left undecided, will retry): "
+                f"{self.stats['eligibility_unavailable']}"
+            )
         logger.info(f"  Jobs added: {self.stats['jobs_added']}")
         logger.info("=" * 60)
 

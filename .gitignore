@@ -5,9 +5,12 @@
 # ===================
 # Sensitive Files (NEVER COMMIT)
 # ===================
+# Every .env variant is ignored, then .env.example is allowed back in. The old list
+# named three exact spellings, so a .env.bak-model-switch written beside them was
+# untracked but NOT ignored — one `git add -A` from committing live API keys.
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
 applicant_info.txt
 
 # Auth folder contains OAuth credentials and tokens

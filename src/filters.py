@@ -20,6 +20,7 @@ from .ai_extractor import (
     GraduationWindow,
     SeasonYearParsed,
 )
+from .eligibility import EligibilityUnavailable
 
 
 logger = logging.getLogger(__name__)
@@ -801,21 +802,25 @@ def passes_hard_filters(
     # wanted is rejected on the cheap check rather than on an eligibility verdict.
     if mode is None:
         mode = get_config().eligibility_mode
-    if mode == ELIGIBILITY_MODE_AI and judgment is not None and judgment.usable:
+    if mode == ELIGIBILITY_MODE_AI:
+        # No verdict means no decision. Falling through to the checks below would let the
+        # path this replaced decide the job — and since extraction no longer produces the
+        # normalized bounds those checks read, they would wave everything through on
+        # None. Raising leaves the job undecided and uncached, to be retried.
+        if judgment is None or not judgment.usable:
+            raise EligibilityUnavailable(
+                "no usable eligibility verdict for this posting"
+            )
         if not judgment.eligible:
             failing = judgment.failing_check
             category = failing.dimension if failing else "eligibility"
             logger.debug(f"Job failed AI eligibility: {judgment.reason()}")
             return False, judgment.reason(), category
-        # The pass cleared the prose dimensions; season/year still applies.
-        passed, reason = check_season_year(
-            user.target_season_year,
-            job.season_year,
-            job.season_year_parsed,
-        )
-        if not passed:
-            logger.debug(f"Job failed season/year filter: {reason}")
-            return False, reason, "season_year"
+        # Season/year is the pass's to decide too, so it is not re-checked here. It used
+        # to be, and that veto rejected a PNC posting the pass had cleared: the posting
+        # named no term, extraction manufactured 2026 out of an application window, and
+        # check_season_year compared against the manufactured year. Re-checking a
+        # dimension the pass already owns only lets the weaker input win.
         return True, "Passed all hard filters (AI eligibility)", "none"
 
     # Check class standing

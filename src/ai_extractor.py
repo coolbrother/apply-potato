@@ -16,7 +16,7 @@ from google import genai
 from google.genai import types as genai_types
 from google.api_core import exceptions as google_exceptions
 
-from .config import Config, get_config
+from .config import Config, get_config, openai_token_limit
 
 
 logger = logging.getLogger(__name__)
@@ -261,14 +261,14 @@ class AIExtractor:
         logger.debug(f"Calling OpenAI {self.config.openai_model}")
         start_time = time.time()
 
-        # Build params - only include max_tokens if configured
+        # Build params - only include the completion cap if configured
         params = {
             "model": self.config.openai_model,
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.1,  # Low temperature for consistent extraction
         }
-        if self.config.openai_max_tokens:
-            params["max_tokens"] = self.config.openai_max_tokens
+        params.update(openai_token_limit(self.config.openai_model,
+                                         self.config.openai_max_tokens))
 
         response = client.chat.completions.create(**params)
 
