@@ -102,7 +102,7 @@ class TestSchema:
         range in the client derives from it.
         """
         assert col_letter(COLUMNS["completed_stages"]) == "W"
-        assert col_letter(COLUMNS["last_email_category"]) == "X"
+        assert col_letter(COLUMNS["last_event"]) == "X"
         assert LAST_COL == "X"
 
     def test_header_present_and_aligned(self):

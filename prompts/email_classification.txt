@@ -42,14 +42,19 @@ stage_done:
   the whole distinction: "Assessment completed", "Thanks for taking", "Thank you for
   completing", "You've completed", "we've received your video interview".
 - These usually come from the assessment platform rather than the employer —
-  CodeSignal, HackerRank, HireVue, Predictive Index — and name the company in the
-  subject. Extract that company as normal.
+  CodeSignal, HackerRank, HireVue, Codility, Predictive Index — and name the company in
+  the subject. Extract that company as normal.
+- Platforms word it differently and some are terse. Any of these is a completion:
+  "Assessment completed", "Thanks for taking", "Thank you for completing", "You have
+  completed", "Your submission has been received", "we've received your video interview".
 - Set "stage_completed":
     "OA"        a coding assessment, online test, or game-based assessment
     "Phone"     a phone screen that has taken place
     "Technical" a technical or on-demand video interview that has been submitted
 - An assessment INVITATION is "oa", never "stage_done", however friendly the wording.
   "Reminder to complete your assessment" is still an invitation — nothing is finished.
+  Neither is an account or onboarding mail from the platform: "Welcome to Codility"
+  arrives when the account is created, not when the test is submitted. That is "unknown".
 - Results are not completions. "Assessment Results", an outcome, or anything that moves
   the candidate forward or ends the process is "offer", "rejection", or the next stage.
 

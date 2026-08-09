@@ -46,7 +46,7 @@ from src.sheets import (
     get_sheets_client,
     JobRow,
     add_stage,
-    category_label,
+    event_label,
     normalize_date,
     parse_sheet_datetime,
     reached_stage,
@@ -515,12 +515,12 @@ class GmailChecker:
         updates["last_email_time"] = self._local_naive(email.date).strftime(
             "%m/%d/%Y %H:%M:%S"
         )
-        # Written together with the time, and always in step with it: the time says when
-        # the last mail landed, this says what it was. Completed Stages records that an
-        # assessment was finished but not that a newer one has since been sent, which is
-        # the gap this closes — an "oa" here on a row already carrying "OA" in W means
-        # one is done and another is waiting.
-        updates["last_email_category"] = category_label(classification.category)
+        # Written together with the time: the time says when the last mail landed, this
+        # says what it was. Completed Stages records that an assessment was finished but
+        # not that a newer one has since been sent, which is the gap this closes — an
+        # "OA Invite" here on a row already carrying "OA" in W means one is done and
+        # another is waiting.
+        updates["last_event"] = event_label(classification.category)
 
         # Update relevant date column. The two paths differ: application_date is
         # single-valued and must come from the confirmation's arrival time — never from
@@ -655,14 +655,14 @@ class GmailChecker:
             return False
 
         try:
-            # last_email_category is written; last_email_time deliberately is not. The
+            # last_event is written; last_email_time deliberately is not. The
             # time column gates status updates — an email older than it is skipped as
             # stale — and a completion is not a status change, so raising it could
             # silence a genuine status mail that arrives later bearing an earlier date.
             # The outstanding rule reads the category alone, so the time is not needed.
             self.sheets_client.update_job(job.row_number, {
                 "completed_stages": updated,
-                "last_email_category": category_label(classification.category),
+                "last_event": event_label(classification.category),
             })
             logger.info(
                 f"Marked {stage} done on row {job.row_number}: {job.company} - {job.position}"

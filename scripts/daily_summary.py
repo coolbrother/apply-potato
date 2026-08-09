@@ -48,7 +48,7 @@ from src.needs_review import (
 )
 from src.sheets import (
     COMPLETABLE_STAGES,
-    category_key,
+    event_key,
     get_sheets_client,
     parse_sheet_datetime,
     reached_stage,
@@ -167,8 +167,8 @@ def _season_totals(jobs, target_season_year: str | None) -> dict[str, int]:
     return totals
 
 
-# Categories that hand the applicant something new to do. Anything else as the last
-# email — a rejection, an offer, a recruiter check-in — leaves nothing outstanding.
+# Events that hand the applicant something new to do. Anything else as the last event —
+# a rejection, an offer, a submitted assessment — leaves nothing outstanding.
 INVITATION_CATEGORIES = {"oa": "OA", "phone": "Phone", "technical": "Technical"}
 
 
@@ -215,7 +215,7 @@ def _stage_progress(jobs, struck: set, target_season_year: str | None) -> dict[s
         # Only a row still sitting at a stage can owe work there.
         if job.status not in progress:
             continue
-        invited_to = INVITATION_CATEGORIES.get(category_key(job.last_email_category))
+        invited_to = INVITATION_CATEGORIES.get(event_key(job.last_event))
         if invited_to == job.status:
             outstanding = True
         else:

@@ -240,7 +240,7 @@ COLUMNS = {
     "notes": 20,                # U
     "last_email_time": 21,      # V
     "completed_stages": 22,     # W
-    "last_email_category": 23,  # X
+    "last_event": 23,          # X
 }
 
 # Header row (must match column order)
@@ -249,7 +249,7 @@ HEADERS = [
     "Application Date", "OA Date", "Phone Interview Date", "Tech Interview Date",
     "Fit Score", "Salary", "Job Type", "Work Model", "Location", "Season/Year",
     "Deadline", "Source", "Added Date", "Resume", "Cover Letter", "Notes",
-    "Last Email Time", "Completed Stages", "Last Email Category"
+    "Last Email Time", "Completed Stages", "Last Event"
 ]
 
 # Stages that can be finished, in pipeline order. Offer is absent on purpose: it is an
@@ -266,34 +266,43 @@ STAGE_DATE_COLUMN = {
 }
 
 
-# How an email category is written into the sheet. The classifier's keys are lowercase
-# identifiers ("stage_done"); the sheet is read by a person and every other column uses
-# title case, so the label is stored and the key is recovered on read.
-CATEGORY_LABELS = {
-    "confirmation": "Confirmation",
-    "oa": "OA",
-    "phone": "Phone",
-    "technical": "Technical",
-    "stage_done": "Stage Done",
+# What the Last Event cell says, per classifier category.
+#
+# Named for the event rather than the stage, because the obvious spellings collide with
+# columns that mean something else. "Stage Done" reads as a restatement of Completed
+# Stages, and "Applied" duplicates Status while meaning a different thing — the stage a
+# row sits at versus the email that just arrived.
+EVENT_LABELS = {
+    "confirmation": "Application Received",
+    "oa": "OA Invite",
+    "phone": "Phone Invite",
+    "technical": "Technical Invite",
+    "stage_done": "Assessment Submitted",
     "offer": "Offer",
-    "rejection": "Rejection",
-    "unknown": "Unknown",
+    "rejection": "Rejected",
 }
 
+# Recovering the key from the label. Includes the spellings this column used earlier
+# today, so rows written before the rename still resolve rather than silently ceasing to
+# match.
+_EVENT_KEYS = {label.lower(): key for key, label in EVENT_LABELS.items()}
+_EVENT_KEYS.update({
+    "oa": "oa", "phone": "phone", "technical": "technical",
+    "stage done": "stage_done", "stage_done": "stage_done",
+    "confirmation": "confirmation", "rejection": "rejection",
+})
 
-def category_label(category: str) -> str:
+
+def event_label(category: str) -> str:
     """The sheet-facing spelling of a classifier category."""
     key = (category or "").strip().lower()
-    return CATEGORY_LABELS.get(key, key.replace("_", " ").title())
+    return EVENT_LABELS.get(key, key.replace("_", " ").title())
 
 
-def category_key(cell: str) -> str:
-    """
-    The classifier key behind a Last Email Category cell.
-
-    Tolerates either spelling, so rows written before the labels existed still resolve.
-    """
-    return (cell or "").strip().lower().replace(" ", "_")
+def event_key(cell: str) -> str:
+    """The classifier key behind a Last Event cell, tolerating older spellings."""
+    text = (cell or "").strip().lower()
+    return _EVENT_KEYS.get(text, text.replace(" ", "_"))
 
 
 def reached_stage(job, stage: str) -> bool:
@@ -380,11 +389,12 @@ class JobRow:
     # Each stage appears at most once however many assessments a company sent, so counting
     # completions is counting rows whose cell contains the stage.
     completed_stages: str = ""
-    # The category of the email behind `last_email_time` — "oa", "stage_done",
-    # "rejection". Paired with completed_stages it distinguishes states the record alone
-    # cannot: W="OA" with X="oa" means one assessment done and a newer one waiting, while
-    # W="OA" with X="stage_done" means nothing is outstanding.
-    last_email_category: str = ""
+    # The most recent thing that happened on this row — "OA Invite", "Assessment
+    # Submitted", "Rejected". Written by an arriving email and by a manual mark, which is
+    # why it is an event rather than an email category. Paired with completed_stages it
+    # distinguishes states the record alone cannot: W="OA" with X="OA Invite" means one
+    # assessment is done and a newer one is waiting.
+    last_event: str = ""
 
     @classmethod
     def from_row(cls, row_number: int, values: List[str]) -> "JobRow":
@@ -438,7 +448,7 @@ class JobRow:
             notes=values[COLUMNS["notes"]],
             last_email_time=values[COLUMNS["last_email_time"]],
             completed_stages=values[COLUMNS["completed_stages"]],
-            last_email_category=values[COLUMNS["last_email_category"]],
+            last_event=values[COLUMNS["last_event"]],
         )
 
 

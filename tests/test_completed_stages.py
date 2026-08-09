@@ -18,8 +18,8 @@ from src.sheets import (
     HEADERS,
     LAST_COL,
     add_stage,
-    category_key,
-    category_label,
+    event_key,
+    event_label,
     col_letter,
     reached_stage,
     remove_stage,
@@ -48,33 +48,35 @@ class TestSchema:
         assert col_letter(COLUMNS["completed_stages"]) == "W"
         assert HEADERS[COLUMNS["completed_stages"]] == "Completed Stages"
 
-    def test_last_email_category_is_column_x(self):
+    def test_last_event_is_column_x(self):
         """
         The record cannot say whether newer work arrived. This column can: an "oa" here
         on a row already carrying "OA" in W means one assessment is done and another is
         waiting — row 308's exact state.
         """
-        assert col_letter(COLUMNS["last_email_category"]) == "X"
-        assert HEADERS[COLUMNS["last_email_category"]] == "Last Email Category"
+        assert col_letter(COLUMNS["last_event"]) == "X"
+        assert HEADERS[COLUMNS["last_event"]] == "Last Event"
         assert LAST_COL == "X"
 
-    def test_category_labels_match_the_sheet_s_casing(self):
+    def test_event_labels_do_not_collide_with_other_columns(self):
         """
-        W holds "OA"/"Phone"/"Technical" because it mirrors Status. X used to hold the
-        classifier's raw keys, so two adjacent columns spelled the same stage two ways.
+        Every earlier spelling read as a restatement of a different column. "Stage Done"
+        echoed Completed Stages; "Applied" duplicated Status while meaning something
+        else — the stage a row sits at, versus the email that just arrived.
         """
-        assert category_label("oa") == "OA"
-        assert category_label("stage_done") == "Stage Done"
-        assert category_label("rejection") == "Rejection"
+        assert event_label("stage_done") == "Assessment Submitted"
+        assert event_label("confirmation") == "Application Received"
+        assert event_label("oa") == "OA Invite"
 
     def test_category_labels_round_trip(self):
         for key in ("oa", "phone", "technical", "stage_done", "rejection", "offer"):
-            assert category_key(category_label(key)) == key
+            assert event_key(event_label(key)) == key
 
-    def test_raw_keys_still_resolve(self):
-        """Rows written before the labels existed must not silently stop matching."""
-        assert category_key("oa") == "oa"
-        assert category_key("stage_done") == "stage_done"
+    def test_earlier_spellings_still_resolve(self):
+        """Rows written before the rename must not silently stop matching."""
+        assert event_key("oa") == "oa"
+        assert event_key("Stage Done") == "stage_done"
+        assert event_key("stage_done") == "stage_done"
 
     def test_offer_is_not_completable(self):
         """An offer is an outcome, not work the applicant does."""
@@ -162,7 +164,7 @@ class TestOutstanding:
     def _job(self, row=1, status="OA", completed="", category="", oa_date=""):
         return SimpleNamespace(row_number=row, company="Acme", position="Intern",
                                status=status, completed_stages=completed,
-                               last_email_category=category, season_year="Summer 2027",
+                               last_event=category, season_year="Summer 2027",
                                oa_date=oa_date, phone_date="", tech_date="")
 
     def _split(self, jobs):

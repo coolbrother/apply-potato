@@ -1,18 +1,24 @@
 """
-Mark a stage finished on one row, or undo that.
+Mark a stage finished on one row.
 
 The Gmail checker records a completion automatically only when exactly one row of that
-company is sitting at the stage. Any company running parallel roles — SIG issues a
-separate assessment per position — lands here instead, so this is the normal route for
-those, not a fallback.
+company reached the stage. Any company running parallel roles — SIG issues a separate
+assessment per position — lands here instead, so this is the normal route for those, not
+a fallback.
 
-Writes only the Completed Stages column. Status is never touched: a row sits at OA both
-before and after the assessment, and only an invitation to the next stage advances it.
+Writes two columns, and Status is never one of them: a row sits at OA both before and
+after the assessment, and only an invitation to the next stage advances it.
+
+  Completed Stages  that the stage was finished. A permanent record, kept even after a
+                    rejection, and deduped so a company's second assessment adds nothing.
+  Last Event        that finishing it is the most recent thing to happen here. This is
+                    what clears the row from the Discord to-do list, and it is why a
+                    second assessment can be marked at all — Completed Stages alone would
+                    have nothing to change.
 
 Usage:
     python scripts/mark_stage_done.py 518 OA
     python scripts/mark_stage_done.py 518 OA --dry-run
-    python scripts/mark_stage_done.py 518 OA --undo
     python scripts/mark_stage_done.py --list OA
 """
 
@@ -29,7 +35,7 @@ from src.sheets import (
     COMPLETABLE_STAGES,
     SheetsClient,
     add_stage,
-    remove_stage,
+    event_label,
     split_stages,
 )
 
@@ -45,7 +51,6 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("row", nargs="?", type=int, help="1-indexed sheet row")
     parser.add_argument("stage", nargs="?", help=f"one of: {', '.join(COMPLETABLE_STAGES)}")
-    parser.add_argument("--undo", action="store_true", help="remove the stage instead")
     parser.add_argument("--dry-run", action="store_true", help="show the change, write nothing")
     parser.add_argument("--list", dest="list_stage", metavar="STAGE",
                         help="list rows at STAGE and whether each is done")
@@ -97,26 +102,34 @@ def main() -> int:
         return 2
 
     before = job.completed_stages or ""
-    after = remove_stage(before, stage) if args.undo else add_stage(before, stage)
+    after = add_stage(before, stage)
+    event_before = job.last_event or ""
+    event_after = event_label("stage_done")
 
     print(f"Row {args.row}: {job.company} - {job.position}")
-    print(f"  status          : {job.status}")
-    print(f"  completed before: {before or '(none)'}")
-    print(f"  completed after : {after or '(none)'}")
+    print(f"  status           : {job.status}")
+    print(f"  completed before : {before or '(none)'}")
+    print(f"  completed after  : {after or '(none)'}")
+    print(f"  last event before: {event_before or '(none)'}")
+    print(f"  last event after : {event_after}")
 
-    if after == before:
-        print(f"\nNothing to do - {stage} is already "
-              f"{'absent' if args.undo else 'recorded'}.")
+    # Completed Stages being unchanged does not mean there is nothing to do: a second
+    # assessment at a company whose first is already recorded adds nothing there, and it
+    # is Last Event that takes the row off the to-do list.
+    if after == before and event_after == event_before:
+        print(f"\nNothing to do - {stage} is recorded and nothing is outstanding.")
         return 0
 
     if args.dry_run:
         print("\n(dry run - nothing written)")
         return 0
 
-    client.update_job(args.row, {"completed_stages": after})
-    verb = "Removed" if args.undo else "Marked"
-    print(f"\n{verb} {stage} on row {args.row}.")
-    logger.info(f"{verb} {stage} on row {args.row} ({job.company})")
+    client.update_job(args.row, {
+        "completed_stages": after,
+        "last_event": event_after,
+    })
+    print(f"\nMarked {stage} on row {args.row}.")
+    logger.info(f"Marked {stage} on row {args.row} ({job.company})")
     return 0
 
 
