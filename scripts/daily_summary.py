@@ -47,12 +47,20 @@ from src.needs_review import (
     load_needs_review,
 )
 from src.sheets import (
+    COMPLETABLE_STAGES,
+    category_key,
     get_sheets_client,
-    parse_sheet_datetime, 
+    parse_sheet_datetime,
+    reached_stage,
     split_date_cell,
+    split_stages,
     STATUS_APPLIED, STATUS_GHOSTED, STATUS_NEW, STATUS_OA, STATUS_OFFER,
     STATUS_PHONE, STATUS_REJECTED, STATUS_TECHNICAL,
 )
+
+# Discord rejects a webhook message whose content exceeds this outright, so the
+# outstanding-work block is trimmed to fit rather than risking the whole summary.
+DISCORD_LIMIT = 2000
 
 
 # Detail lines listed under each review reason before collapsing into a "+N more".
@@ -159,6 +167,107 @@ def _season_totals(jobs, target_season_year: str | None) -> dict[str, int]:
     return totals
 
 
+# Categories that hand the applicant something new to do. Anything else as the last
+# email — a rejection, an offer, a recruiter check-in — leaves nothing outstanding.
+INVITATION_CATEGORIES = {"oa": "OA", "phone": "Phone", "technical": "Technical"}
+
+
+def _stage_progress(jobs, struck: set, target_season_year: str | None) -> dict[str, dict]:
+    """
+    Per stage: what is outstanding, how many are completed, and how many there are.
+
+    Three counts, from three different sources, because no one column answers all of it:
+
+      total      every row that reached the stage this season. Deliberately the same
+                 rule _season_totals uses, so this figure equals the stage's line in
+                 Season Totals rather than quietly disagreeing with it.
+      todo       rows sitting at the stage with work still owed.
+      completed  the rest — total minus todo.
+
+    The two parts partition the total, so the figures always sum. Row 308 finished one
+    Chicago assessment and was sent a second: it counts as outstanding, not completed,
+    because something is still owed there. Counting it in both would read 3/7/9 against a
+    total of 9, which invites exactly the doubt the three numbers exist to remove.
+
+    That makes "completed" mean *nothing further owed at this stage*, which is not the
+    same question as "how many assessments have I sat" — that one is answered by counting
+    rows whose Completed Stages contains the stage, and 308 is included there.
+
+    Outstanding cannot be read from Completed Stages alone: 308's record correctly says
+    "OA" while an assessment is still owed. The last email settles it — an invitation
+    means new work, a receipt means none.
+    """
+    progress = {
+        stage: {"todo": [], "completed": 0, "total": 0} for stage in COMPLETABLE_STAGES
+    }
+
+    for job in jobs:
+        if not (job.company or "").strip() or job.row_number in struck:
+            continue
+        if not _season_matches(target_season_year, job.season_year):
+            continue
+
+        recorded = split_stages(job.completed_stages)
+        for stage in COMPLETABLE_STAGES:
+            if reached_stage(job, stage):
+                progress[stage]["total"] += 1
+
+        # Only a row still sitting at a stage can owe work there.
+        if job.status not in progress:
+            continue
+        invited_to = INVITATION_CATEGORIES.get(category_key(job.last_email_category))
+        if invited_to == job.status:
+            outstanding = True
+        else:
+            # No invitation outstanding, so fall back to the record. This covers rows
+            # predating the category column and rows whose last mail was something else.
+            outstanding = job.status not in recorded
+        if outstanding:
+            progress[job.status]["todo"].append(job)
+
+    # Derived rather than counted, so the two parts cannot fail to partition the total.
+    for stage in COMPLETABLE_STAGES:
+        progress[stage]["completed"] = progress[stage]["total"] - len(progress[stage]["todo"])
+
+    return progress
+
+
+def _stage_block(progress: dict[str, dict], budget: int) -> str:
+    """
+    Render the outstanding work, trimming to fit `budget` characters.
+
+    Discord rejects a message over 2000 characters outright, so this degrades in two
+    steps rather than risking the whole summary: positions are dropped first, then the
+    list is truncated with a count of what was left out. The counts always survive.
+    """
+    def render(with_position: bool, limit: int | None) -> str:
+        lines = []
+        for stage in COMPLETABLE_STAGES:
+            todo = progress[stage]["todo"]
+            completed, total = progress[stage]["completed"], progress[stage]["total"]
+            if not total:
+                continue
+            # outstanding / completed / total. The last figure matches this stage's line
+            # in Season Totals; the three need not sum, since a row that finished one
+            # assessment and was sent another is both completed and outstanding.
+            lines.append(f"**{stage} ({len(todo)}/{completed}/{total})**")
+            if not todo:
+                continue
+            shown = todo if limit is None else todo[:limit]
+            for job in shown:
+                label = f"{job.company} — {job.position}" if with_position else job.company
+                lines.append(f"  • {label}, row {job.row_number}")
+            if len(todo) > len(shown):
+                lines.append(f"  • …and {len(todo) - len(shown)} more")
+        return "\n".join(lines)
+
+    for with_position, limit in ((True, None), (False, None), (False, 3), (False, 0)):
+        block = render(with_position, limit)
+        if len(block) <= budget:
+            return block
+    return ""
+
+
 def _resolve_window(window: str | None, now: datetime) -> tuple[str, datetime, datetime]:
     """Return (window_name, start, end) for the summary.
 
@@ -207,6 +316,14 @@ def main() -> None:
 
     sheets = get_sheets_client()
     jobs = sheets.get_all_jobs()
+
+    # Retired duplicates are struck rather than deleted. Listing them as outstanding work
+    # would be noise, so the outstanding block skips them the way the matcher does.
+    try:
+        struck_rows = sheets.get_struck_rows()
+    except Exception as e:
+        logger.warning(f"Could not read struck rows, treating none as struck: {e}")
+        struck_rows = set()
 
     # row_number -> status lookup for cross-referencing filled_forms.json
     row_status = {job.row_number: job.status for job in jobs}
@@ -383,6 +500,13 @@ def main() -> None:
         f"⏳ Awaiting response:      **{totals['awaiting']}**\n"
         f"_Cumulative — a job counts toward every stage it reached._"
     )
+
+    # Outstanding work, appended within whatever room Discord's 2000-character limit
+    # leaves. Counts are cumulative above; this block is strictly "what is still on you".
+    stage_block = _stage_block(_stage_progress(jobs, struck_rows, target_season),
+                               budget=DISCORD_LIMIT - len(msg) - 80)
+    if stage_block:
+        msg += f"\n\n📌 **Outstanding**\n{divider}\n{stage_block}"
 
     if args.dry_run:
         print(msg)

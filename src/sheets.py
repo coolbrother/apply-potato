@@ -134,6 +134,50 @@ def split_date_cell(value: Any) -> List[str]:
     return [segment.strip() for segment in str(value).split(";") if segment.strip()]
 
 
+def split_stages(value: Any) -> List[str]:
+    """
+    Read the Completed Stages cell into a list of canonical stage names.
+
+    Matching is case-insensitive so a hand-typed "oa" counts, and unknown text is kept
+    verbatim rather than dropped — the cell is user-editable and silently discarding
+    something they typed would be worse than carrying it along.
+    """
+    canonical = {s.lower(): s for s in COMPLETABLE_STAGES}
+    out: List[str] = []
+    for segment in split_date_cell(value):
+        name = canonical.get(segment.lower(), segment)
+        if name not in out:
+            out.append(name)
+    return out
+
+
+def add_stage(value: Any, stage: str) -> str:
+    """
+    Return the cell value with `stage` recorded, preserving order and deduping.
+
+    Returns the cell unchanged when the stage is already present, so a re-processed
+    email cannot append a second copy.
+    """
+    stages = split_stages(value)
+    canonical = {s.lower(): s for s in COMPLETABLE_STAGES}
+    name = canonical.get((stage or "").strip().lower())
+    if not name:
+        raise ValueError(f"unknown stage {stage!r}; expected one of {COMPLETABLE_STAGES}")
+    if name not in stages:
+        stages.append(name)
+    # Keep pipeline order rather than arrival order, so the cell reads the way the
+    # process runs regardless of which email landed first.
+    order = {s: i for i, s in enumerate(COMPLETABLE_STAGES)}
+    stages.sort(key=lambda s: order.get(s, len(order)))
+    return "; ".join(stages)
+
+
+def remove_stage(value: Any, stage: str) -> str:
+    """Return the cell value with `stage` removed; used to undo a wrong mark."""
+    name = (stage or "").strip().lower()
+    return "; ".join(s for s in split_stages(value) if s.lower() != name)
+
+
 def date_already_recorded(existing: Any, date_str: str) -> bool:
     """
     Check whether date_str's calendar date is already present in a date cell.
@@ -195,6 +239,8 @@ COLUMNS = {
     "cover_letter_needed": 19,  # T
     "notes": 20,                # U
     "last_email_time": 21,      # V
+    "completed_stages": 22,     # W
+    "last_email_category": 23,  # X
 }
 
 # Header row (must match column order)
@@ -203,8 +249,66 @@ HEADERS = [
     "Application Date", "OA Date", "Phone Interview Date", "Tech Interview Date",
     "Fit Score", "Salary", "Job Type", "Work Model", "Location", "Season/Year",
     "Deadline", "Source", "Added Date", "Resume", "Cover Letter", "Notes",
-    "Last Email Time"
+    "Last Email Time", "Completed Stages", "Last Email Category"
 ]
+
+# Stages that can be finished, in pipeline order. Offer is absent on purpose: it is an
+# outcome, not something the applicant completes.
+COMPLETABLE_STAGES = ("OA", "Phone", "Technical")
+
+# The date column that proves a row reached each stage. Status alone is not enough: a
+# rejected row shows "Rejected", but its OA Date still records that the assessment
+# happened, which is how a completion can be attributed after the outcome arrives.
+STAGE_DATE_COLUMN = {
+    "OA": "oa_date",
+    "Phone": "phone_date",
+    "Technical": "tech_date",
+}
+
+
+# How an email category is written into the sheet. The classifier's keys are lowercase
+# identifiers ("stage_done"); the sheet is read by a person and every other column uses
+# title case, so the label is stored and the key is recovered on read.
+CATEGORY_LABELS = {
+    "confirmation": "Confirmation",
+    "oa": "OA",
+    "phone": "Phone",
+    "technical": "Technical",
+    "stage_done": "Stage Done",
+    "offer": "Offer",
+    "rejection": "Rejection",
+    "unknown": "Unknown",
+}
+
+
+def category_label(category: str) -> str:
+    """The sheet-facing spelling of a classifier category."""
+    key = (category or "").strip().lower()
+    return CATEGORY_LABELS.get(key, key.replace("_", " ").title())
+
+
+def category_key(cell: str) -> str:
+    """
+    The classifier key behind a Last Email Category cell.
+
+    Tolerates either spelling, so rows written before the labels existed still resolve.
+    """
+    return (cell or "").strip().lower().replace(" ", "_")
+
+
+def reached_stage(job, stage: str) -> bool:
+    """
+    Whether this row got as far as `stage`, whatever its status is now.
+
+    True when the stage's date cell is filled, or the row is sitting at the stage with
+    the date not yet written. Deliberately independent of the outcome: rows 261, 262, 315
+    and 317 are all Rejected with an OA Date, and their assessments were still taken.
+    """
+    if stage not in STAGE_DATE_COLUMN:
+        return False
+    if (getattr(job, "status", "") or "") == stage:
+        return True
+    return bool(str(getattr(job, STAGE_DATE_COLUMN[stage], "") or "").strip())
 
 
 def col_letter(col_index: int) -> str:
@@ -271,6 +375,16 @@ class JobRow:
     # Arrival time of the most recent email that updated this row. Defaulted because
     # every other field is required and pre-existing rows have a blank cell.
     last_email_time: str = ""
+    # Semicolon-joined stages the applicant has finished, e.g. "OA; Phone". A permanent
+    # record, never cleared: it says which stages were completed, not what is outstanding.
+    # Each stage appears at most once however many assessments a company sent, so counting
+    # completions is counting rows whose cell contains the stage.
+    completed_stages: str = ""
+    # The category of the email behind `last_email_time` — "oa", "stage_done",
+    # "rejection". Paired with completed_stages it distinguishes states the record alone
+    # cannot: W="OA" with X="oa" means one assessment done and a newer one waiting, while
+    # W="OA" with X="stage_done" means nothing is outstanding.
+    last_email_category: str = ""
 
     @classmethod
     def from_row(cls, row_number: int, values: List[str]) -> "JobRow":
@@ -323,6 +437,8 @@ class JobRow:
             cover_letter_needed=values[COLUMNS["cover_letter_needed"]],
             notes=values[COLUMNS["notes"]],
             last_email_time=values[COLUMNS["last_email_time"]],
+            completed_stages=values[COLUMNS["completed_stages"]],
+            last_email_category=values[COLUMNS["last_email_category"]],
         )
 
 

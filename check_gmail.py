@@ -45,8 +45,11 @@ from src.sheets import (
     SheetsClient,
     get_sheets_client,
     JobRow,
+    add_stage,
+    category_label,
     normalize_date,
     parse_sheet_datetime,
+    reached_stage,
     STATUS_APPLIED,
     STATUS_GHOSTED,
     STATUS_NEW,
@@ -165,6 +168,7 @@ class GmailChecker:
             "unknown_category": 0,
             "stale_skipped": 0,
             "status_regression_blocked": 0,
+            "stages_completed": 0,
         }
 
     def _find_matching_job(
@@ -511,6 +515,12 @@ class GmailChecker:
         updates["last_email_time"] = self._local_naive(email.date).strftime(
             "%m/%d/%Y %H:%M:%S"
         )
+        # Written together with the time, and always in step with it: the time says when
+        # the last mail landed, this says what it was. Completed Stages records that an
+        # assessment was finished but not that a newer one has since been sent, which is
+        # the gap this closes — an "oa" here on a row already carrying "OA" in W means
+        # one is done and another is waiting.
+        updates["last_email_category"] = category_label(classification.category)
 
         # Update relevant date column. The two paths differ: application_date is
         # single-valued and must come from the confirmation's arrival time — never from
@@ -580,6 +590,92 @@ class GmailChecker:
             logger.error(f"Failed to update job: {e}")
             return False
 
+    def _record_stage_done(
+        self,
+        client: GmailClient,
+        email: EmailMessage,
+        classification: EmailClassification,
+    ) -> bool:
+        """
+        Mark a finished stage on the one row that can be sitting at it.
+
+        These emails come from the assessment platform, not the employer — "Assessment
+        completed: Susquehanna Coding Assessment" — so they name a company and almost
+        never a position. The stage itself does the narrowing instead: only a row whose
+        status is that stage can have just finished it.
+
+        Marking *every* qualifying row was considered, because Millennium runs one
+        assessment across two roles. It is not safe: SIG issues a separate assessment per
+        position, so the same rule would record work that has not been done. When more
+        than one row qualifies the email is flagged for review and nothing is written —
+        `scripts/mark_stage_done.py` is the intended route for those.
+
+        Never changes the status, and never depends on it either. Rows 261, 262, 315 and
+        317 are all Rejected with an OA Date — the assessments were taken, the outcome
+        simply arrived afterwards. Matching on "is at OA" would have refused all four, so
+        the test is whether the row *reached* the stage.
+        """
+        stage = classification.stage_completed
+
+        candidates: List[JobRow] = []
+        company_used = ""
+        for company in classification.company_candidates or []:
+            rows = self.sheets_client.find_jobs_by_company(company)
+            if rows:
+                company_used = company
+                candidates = [r for r in rows if r.row_number not in self._struck_rows]
+                break
+
+        at_stage = [r for r in candidates if reached_stage(r, stage)]
+
+        if len(at_stage) != 1:
+            reason = REASON_AMBIGUOUS if len(at_stage) > 1 else REASON_UNTRACKED
+            logger.warning(
+                f"{stage} completion from {email.sender_email}: "
+                f"{len(at_stage)} row(s) of '{company_used or '?'}' reached {stage} — "
+                f"not guessing; flagged for review"
+            )
+            self.stats["no_match"] += 1
+            if reason == REASON_AMBIGUOUS:
+                self.stats["ambiguous"] += 1
+            self._log_needs_review(
+                client, email, classification,
+                MatchOutcome(reason=reason, company=company_used, candidates=at_stage),
+            )
+            client.mark_as_processed(email.message_id)
+            return False
+
+        job = at_stage[0]
+        updated = add_stage(job.completed_stages, stage)
+        if updated == job.completed_stages:
+            logger.info(
+                f"{stage} already recorded on row {job.row_number} ({job.company})"
+            )
+            client.mark_as_processed(email.message_id)
+            return False
+
+        try:
+            # last_email_category is written; last_email_time deliberately is not. The
+            # time column gates status updates — an email older than it is skipped as
+            # stale — and a completion is not a status change, so raising it could
+            # silence a genuine status mail that arrives later bearing an earlier date.
+            # The outstanding rule reads the category alone, so the time is not needed.
+            self.sheets_client.update_job(job.row_number, {
+                "completed_stages": updated,
+                "last_email_category": category_label(classification.category),
+            })
+            logger.info(
+                f"Marked {stage} done on row {job.row_number}: {job.company} - {job.position}"
+            )
+            self.stats["stages_completed"] += 1
+            self.stats["updated"] += 1
+        except Exception as e:
+            logger.error(f"Failed to record {stage} completion on row {job.row_number}: {e}")
+            return False
+
+        client.mark_as_processed(email.message_id)
+        return True
+
     def _process_email(self, client: GmailClient, email: EmailMessage) -> bool:
         """
         Process a single email.
@@ -634,6 +730,12 @@ class GmailChecker:
             )
             client.mark_as_processed(email.message_id)
             return False
+
+        # A completion is not a stage change, so it takes its own path: it never writes
+        # a status, and it is matched by which rows are sitting at that stage rather
+        # than by position text, which these emails rarely carry.
+        if classification.category == "stage_done":
+            return self._record_stage_done(client, email, classification)
 
         # Find matching job
         outcome = self._find_matching_job(classification, email)
@@ -774,6 +876,7 @@ class GmailChecker:
         logger.info(f"  No match found: {self.stats['no_match']} (ambiguous: {self.stats['ambiguous']})")
         logger.info(f"  Stale (older than last email): {self.stats['stale_skipped']}")
         logger.info(f"  Status held (would regress): {self.stats['status_regression_blocked']}")
+        logger.info(f"  Stages marked done: {self.stats['stages_completed']}")
         logger.info(f"  Jobs updated: {self.stats['updated']}")
         logger.info("=" * 60)
 

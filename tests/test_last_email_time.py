@@ -94,7 +94,16 @@ class TestSchema:
     def test_last_email_time_is_column_v(self):
         assert COLUMNS["last_email_time"] == 21
         assert col_letter(COLUMNS["last_email_time"]) == "V"
-        assert LAST_COL == "V"
+
+    def test_stage_tracking_columns_are_last(self):
+        """
+        Completed Stages (W) and Last Email Category (X) were appended together. This
+        pins the width so a future column has to update LAST_COL deliberately — every A1
+        range in the client derives from it.
+        """
+        assert col_letter(COLUMNS["completed_stages"]) == "W"
+        assert col_letter(COLUMNS["last_email_category"]) == "X"
+        assert LAST_COL == "X"
 
     def test_header_present_and_aligned(self):
         assert len(HEADERS) == len(COLUMNS)

@@ -17,6 +17,7 @@ from google.genai import types as genai_types
 from google.api_core import exceptions as google_exceptions
 
 from .config import Config, get_config
+from .sheets import COMPLETABLE_STAGES
 from .gmail import EmailMessage
 
 
@@ -26,9 +27,12 @@ logger = logging.getLogger(__name__)
 @dataclass
 class EmailClassification:
     """Result of email classification."""
-    category: str  # confirmation, oa, phone, technical, offer, rejection, unknown
+    category: str  # confirmation, oa, phone, technical, stage_done, offer, rejection, unknown
     confidence: float
     company_candidates: list  # List of company names found in email
+    # Which stage the applicant finished. Only set for category "stage_done"; None
+    # elsewhere, so a caller can treat its presence as the signal.
+    stage_completed: Optional[str] = None
     position: Optional[str] = None
     date_mentioned: Optional[str] = None
     time_mentioned: Optional[str] = None
@@ -259,9 +263,23 @@ class EmailClassifier:
 
         # Validate required fields
         category = data.get("category", "unknown")
-        if category not in ("confirmation", "oa", "phone", "technical", "offer", "rejection", "unknown"):
+        if category not in ("confirmation", "oa", "phone", "technical", "stage_done",
+                            "offer", "rejection", "unknown"):
             logger.warning(f"Unknown category '{category}', treating as 'unknown'")
             category = "unknown"
+
+        # A stage_done with no recognisable stage says nothing actionable, so it is
+        # demoted rather than left to be interpreted downstream.
+        stage_completed = None
+        if category == "stage_done":
+            raw_stage = str(data.get("stage_completed") or "").strip().lower()
+            stage_completed = {s.lower(): s for s in COMPLETABLE_STAGES}.get(raw_stage)
+            if stage_completed is None:
+                logger.warning(
+                    f"stage_done without a valid stage_completed ({raw_stage!r}); "
+                    f"treating as 'unknown'"
+                )
+                category = "unknown"
 
         confidence = data.get("confidence", 0.0)
         if not isinstance(confidence, (int, float)):
@@ -284,6 +302,7 @@ class EmailClassifier:
             category=category,
             confidence=confidence,
             company_candidates=company_candidates,
+            stage_completed=stage_completed,
             position=data.get("position"),
             date_mentioned=data.get("date_mentioned"),
             time_mentioned=data.get("time_mentioned"),

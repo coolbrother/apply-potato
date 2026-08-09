@@ -11,6 +11,8 @@ Classify the email into one of these categories:
 - "oa": Online assessment invitation (HackerRank, CodeSignal, etc.)
 - "phone": Phone screen or phone interview invitation
 - "technical": Technical interview invitation (onsite, virtual, coding round)
+- "stage_done": The candidate has FINISHED a stage — a receipt for work already done,
+  not an invitation to do it. Set "stage_completed" to which one.
 - "offer": Job offer
 - "rejection": Application rejected
 - "unknown": Cannot determine, or none of the above fits. Mail that concerns a role
@@ -21,7 +23,8 @@ Classify the email into one of these categories:
 Extract the following fields:
 
 {
-    "category": "confirmation | oa | phone | technical | offer | rejection | unknown",
+    "category": "confirmation | oa | phone | technical | stage_done | offer | rejection | unknown",
+    "stage_completed": "OA | Phone | Technical — only when category is stage_done, else null",
     "confidence": 0.0 to 1.0,
     "company_candidates": ["Company A", "Company B"],
     "position": "Job title if mentioned",
@@ -33,6 +36,22 @@ Extract the following fields:
 }
 
 CLASSIFICATION GUIDELINES:
+
+stage_done:
+- A RECEIPT for something already finished, not an invitation to start it. The tense is
+  the whole distinction: "Assessment completed", "Thanks for taking", "Thank you for
+  completing", "You've completed", "we've received your video interview".
+- These usually come from the assessment platform rather than the employer —
+  CodeSignal, HackerRank, HireVue, Predictive Index — and name the company in the
+  subject. Extract that company as normal.
+- Set "stage_completed":
+    "OA"        a coding assessment, online test, or game-based assessment
+    "Phone"     a phone screen that has taken place
+    "Technical" a technical or on-demand video interview that has been submitted
+- An assessment INVITATION is "oa", never "stage_done", however friendly the wording.
+  "Reminder to complete your assessment" is still an invitation — nothing is finished.
+- Results are not completions. "Assessment Results", an outcome, or anything that moves
+  the candidate forward or ends the process is "offer", "rejection", or the next stage.
 
 confirmation:
 - Subject contains: "application received", "thank you for applying", "application submitted"
