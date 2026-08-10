@@ -648,13 +648,17 @@ class GmailChecker:
         job = at_stage[0]
         updated = add_stage(job.completed_stages, stage)
         event = event_label(classification.category)
+        arrived = self._local_naive(email.date)
+        recorded = parse_sheet_datetime(job.last_email_time)
 
-        # Completed Stages being unchanged does not mean there is nothing to do. It
-        # dedupes, so a company's second assessment adds nothing there — and Last Event
-        # is what actually takes the row off the to-do list. Returning early on the W
-        # comparison alone left Capital One's receipt unrecorded: the row already said
-        # "OA", so a correctly classified completion wrote nothing at all.
-        if updated == job.completed_stages and event == (job.last_event or ""):
+        # Nothing to do only when all three columns would keep their values. Completed
+        # Stages alone is not enough: it dedupes, so a company's second assessment adds
+        # nothing there — returning early on that comparison left Capital One's receipt
+        # unrecorded, since the row already said "OA". Last Email Time counts too, or a
+        # later completion would be seen and then not recorded as having arrived.
+        if (updated == job.completed_stages
+                and event == (job.last_event or "")
+                and recorded is not None and arrived <= recorded):
             logger.info(
                 f"{stage} already recorded on row {job.row_number} ({job.company})"
             )
@@ -662,14 +666,19 @@ class GmailChecker:
             return False
 
         try:
-            # last_event is written; last_email_time deliberately is not. The
-            # time column gates status updates — an email older than it is skipped as
-            # stale — and a completion is not a status change, so raising it could
-            # silence a genuine status mail that arrives later bearing an earlier date.
-            # The outstanding rule reads the category alone, so the time is not needed.
+            # Last Email Time is the most recent email to touch this row, whatever it
+            # was, so a completion writes it like anything else.
+            #
+            # It was left out at first to protect the staleness guard: this column is
+            # what stops an older email changing a status, and a completion is not a
+            # status change. That weighed a rare case — an email both delivered late and
+            # dated before the completion — against a constant one, the column
+            # understating how recently a row was touched every single time. Row 518 read
+            # as last touched on 4 August when its receipt had arrived that evening.
             self.sheets_client.update_job(job.row_number, {
                 "completed_stages": updated,
                 "last_event": event,
+                "last_email_time": arrived.strftime("%m/%d/%Y %H:%M:%S"),
             })
             logger.info(
                 f"Marked {stage} done on row {job.row_number}: {job.company} - {job.position}"
