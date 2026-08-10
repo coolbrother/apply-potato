@@ -136,6 +136,7 @@ class JobScraper:
         self.stats = {
             "listings_found": 0,
             "duplicates_skipped": 0,
+            "duplicate_postings": 0,
             "filtered_skipped": 0,
             "scrape_failures": 0,
             "extraction_failures": 0,
@@ -444,15 +445,37 @@ class JobScraper:
             # Prepare and add to Sheets
             job_data = self._prepare_job_data(listing, extracted, fit_score, score_notes, final_url)
 
+            # The same seat can reach the sheet under several URLs — GDIT posted one
+            # Praxis internship four times under four requisition ids, giving four rows
+            # and an ambiguous match for every Praxis email afterwards. URL dedup cannot
+            # see that; the job's own attributes can.
+            if self.dedup_checker.job_exists_by_identity(
+                job_data["company"], job_data["position"],
+                job_data["location"], job_data["season_year"],
+            ):
+                logger.info(
+                    f"  Skipping: same posting already on the sheet — "
+                    f"{job_data['company']} - {job_data['position']} "
+                    f"({job_data['location'] or 'no location'}, "
+                    f"{job_data['season_year'] or 'no term'})"
+                )
+                self.stats["duplicate_postings"] += 1
+                continue
+
             try:
                 row_num = self.sheets_client.add_job(job_data)
                 logger.info(f"  Added to Sheets (row {row_num}): {extracted.company} - {extracted.title} (score: {fit_score})")
                 self.stats["jobs_added"] += 1
                 added_any = True
 
-                # Add to dedup cache
+                # Add to dedup cache — both keys, so a second requisition for the same
+                # seat is caught within this run and not only on the next one.
                 url = job_data["position_url"]
                 self.dedup_checker.add_to_cache(url)
+                self.dedup_checker.add_identity_to_cache(
+                    job_data["company"], job_data["position"],
+                    job_data["location"], job_data["season_year"],
+                )
 
                 # Dream Company = in user's named list OR meets salary threshold
                 is_dream = extracted.company and is_dream_company(
@@ -676,6 +699,7 @@ class JobScraper:
         logger.info(f"  Time elapsed: {elapsed:.1f}s")
         logger.info(f"  Listings found: {self.stats['listings_found']}")
         logger.info(f"  Duplicates skipped: {self.stats['duplicates_skipped']}")
+        logger.info(f"  Same posting, different URL: {self.stats['duplicate_postings']}")
         logger.info(f"  Filtered skipped: {self.stats['filtered_skipped']}")
         logger.info(f"  Scrape failures: {self.stats['scrape_failures']}")
         logger.info(f"  Extraction failures: {self.stats['extraction_failures']}")

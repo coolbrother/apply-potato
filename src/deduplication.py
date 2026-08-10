@@ -50,6 +50,33 @@ TRACKING_PARAMS = {
 }
 
 
+def identity_key(company: str, position: str, location: str,
+                 season_year: str) -> Optional[tuple]:
+    """
+    The attributes that make two postings the same seat, or None if too little is known.
+
+    A person deciding whether they have already seen a job does not compare the prose —
+    they look at what the job is: the company, the role, where it is, and which term.
+    Palantir runs one description across New York, Washington and Palo Alto, so identical
+    text is three real seats; GDIT posted one Praxis internship four times with the text
+    differing only in the requisition id.
+
+    Company and position must both be present, since a key built on blanks would collapse
+    unrelated rows. Location and term are compared as given: a blank is its own value, so
+    a row that never recorded a location does not match one that did. That errs toward
+    adding a row rather than silently dropping a job.
+    """
+    # str() first: Sheets hands back a bare year like 2027 as an int, and a fit score or
+    # date cell can arrive as a float. Only the text matters here.
+    def clean(value) -> str:
+        return str(value if value is not None else "").strip().lower()
+
+    co, title = clean(company), clean(position)
+    if not co or not title:
+        return None
+    return (co, title, clean(location), clean(season_year))
+
+
 def normalize_url(url: str) -> str:
     """
     Normalize a URL for deduplication.
@@ -118,6 +145,9 @@ class DeduplicationChecker:
         self.config = config or get_config()
         self._sheets_client = sheets_client
         self._cached_urls: Optional[set] = None
+        # Company/role/place/term keys for every row, so a seat already on the sheet is
+        # recognised even when a second requisition gives it a different URL.
+        self._cached_identities: Optional[set] = None
         self._filtered_urls: set = set()
         self._seen_source_urls: dict = {}  # {normalized_url: timestamp_str}
         self._extraction_failures: list = []  # [{url, timestamp, company, title, content_preview, reason}]
@@ -142,12 +172,39 @@ class DeduplicationChecker:
 
         # Build set of normalized URLs
         self._cached_urls = set()
+        self._cached_identities = set()
         for job in jobs:
             if job.position_url:
                 normalized = normalize_url(job.position_url)
                 self._cached_urls.add(normalized)
+            key = identity_key(job.company, job.position, job.location, job.season_year)
+            if key:
+                self._cached_identities.add(key)
 
-        logger.info(f"Refreshed job cache: {len(self._cached_urls)} existing job URLs")
+        logger.info(
+            f"Refreshed job cache: {len(self._cached_urls)} existing job URLs, "
+            f"{len(self._cached_identities)} distinct postings"
+        )
+
+    def job_exists_by_identity(self, company: str, position: str,
+                               location: str, season_year: str) -> bool:
+        """
+        Whether the same seat is already on the sheet under a different URL.
+
+        URL dedup cannot see this: GDIT posted one Praxis internship four times under
+        four requisition IDs, so four URLs, four rows, and every Praxis email after that
+        was an ambiguous match. Comparing the page text would not have helped either —
+        Palantir reuses one description across New York, Washington and Palo Alto, which
+        are three real seats.
+
+        What separates them is the job's own attributes, which is how a person decides:
+        same company, same role, same place, same term is the same seat.
+        """
+        if self._cached_identities is None:
+            self.refresh_cache()
+
+        key = identity_key(company, position, location, season_year)
+        return bool(key) and key in self._cached_identities
 
     def job_exists(self, url: str) -> bool:
         """
@@ -174,6 +231,20 @@ class DeduplicationChecker:
             logger.debug(f"New job URL: {url}")
 
         return exists
+
+    def add_identity_to_cache(self, company: str, position: str,
+                              location: str, season_year: str) -> None:
+        """
+        Remember a seat just added, so a second requisition for it is caught this run.
+
+        Without this the four GDIT requisitions would still produce four rows whenever
+        they arrive in the same pass — the sheet cache is only refreshed at the start.
+        """
+        if self._cached_identities is None:
+            self._cached_identities = set()
+        key = identity_key(company, position, location, season_year)
+        if key:
+            self._cached_identities.add(key)
 
     def add_to_cache(self, url: str) -> None:
         """
