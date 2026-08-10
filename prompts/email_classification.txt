@@ -38,19 +38,25 @@ Extract the following fields:
 CLASSIFICATION GUIDELINES:
 
 stage_done:
-- A RECEIPT for something already finished, not an invitation to start it. The tense is
-  the whole distinction: "Assessment completed", "Thanks for taking", "Thank you for
-  completing", "You've completed", "we've received your video interview".
-- These usually come from the assessment platform rather than the employer —
-  CodeSignal, HackerRank, HireVue, Codility, Predictive Index — and name the company in
-  the subject. Extract that company as normal.
-- Platforms word it differently and some are terse. Any of these is a completion:
-  "Assessment completed", "Thanks for taking", "Thank you for completing", "You have
-  completed", "Your submission has been received", "we've received your video interview".
+- A RECEIPT for something already finished, not an invitation to start it. Judge this by
+  the TENSE, never by who sent it. Past tense about the applicant's own action is the
+  whole signal: "Assessment completed", "Thanks for taking", "Thank you for completing",
+  "You have completed", "Your submission has been received", "Thank you for submitting
+  your On-Demand Interview", "we've received your video interview".
+- Do not require a recognised platform. These arrive from whichever service the employer
+  happens to use, and there is always one more — CodeSignal, HackerRank, HireVue,
+  Codility and Modern Hire have all appeared, and the next will not be on any list. An
+  unfamiliar sender saying "thank you for submitting" is still a completion.
+- The company is usually named in the subject or body even when the sender is a platform.
+  Extract it as normal.
 - Set "stage_completed":
-    "OA"        a coding assessment, online test, or game-based assessment
+    "OA"        a coding assessment, online test, game-based assessment, or a recorded
+                one-way video interview ("on-demand", "on-demand web/video", HireVue or
+                Modern Hire style). These are the first round, sent to everyone who
+                applies, so they belong with the assessment rather than the interviews.
     "Phone"     a phone screen that has taken place
-    "Technical" a technical or on-demand video interview that has been submitted
+    "Technical" a LIVE technical round with an interviewer — an onsite, a virtual
+                pairing session, a coding interview. Not a recording submitted to nobody.
 - An assessment INVITATION is "oa", never "stage_done", however friendly the wording.
   "Reminder to complete your assessment" is still an invitation — nothing is finished.
   Neither is an account or onboarding mail from the platform: "Welcome to Codility"

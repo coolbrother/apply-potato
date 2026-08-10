@@ -647,7 +647,14 @@ class GmailChecker:
 
         job = at_stage[0]
         updated = add_stage(job.completed_stages, stage)
-        if updated == job.completed_stages:
+        event = event_label(classification.category)
+
+        # Completed Stages being unchanged does not mean there is nothing to do. It
+        # dedupes, so a company's second assessment adds nothing there — and Last Event
+        # is what actually takes the row off the to-do list. Returning early on the W
+        # comparison alone left Capital One's receipt unrecorded: the row already said
+        # "OA", so a correctly classified completion wrote nothing at all.
+        if updated == job.completed_stages and event == (job.last_event or ""):
             logger.info(
                 f"{stage} already recorded on row {job.row_number} ({job.company})"
             )
@@ -662,7 +669,7 @@ class GmailChecker:
             # The outstanding rule reads the category alone, so the time is not needed.
             self.sheets_client.update_job(job.row_number, {
                 "completed_stages": updated,
-                "last_event": event_label(classification.category),
+                "last_event": event,
             })
             logger.info(
                 f"Marked {stage} done on row {job.row_number}: {job.company} - {job.position}"
