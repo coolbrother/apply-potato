@@ -124,6 +124,11 @@ COMPANY NAME EXTRACTION (CRITICAL):
     - "Meta Platforms"  -> ["Meta Platforms", "Meta"]
   The spreadsheet often stores the bare brand, so omitting it loses the match.
 - Do NOT include ATS platforms (Greenhouse, Lever, Jobvite, Workday, candidate.fyi)
+- Do NOT return a domain or URL as a name, and do NOT invent a name out of one. Assessment
+  vendors mail on the employer's behalf, so their hosts litter the body; a link to
+  webassessment.una-arcticshores.com is evidence of the vendor, not of an employer called
+  "una-arcticshores.com" or "UNA". Read a name off a domain only for rule 4 above - the
+  SENDER's domain, when that sender is the employer.
 - If multiple company names refer to the same org, include ALL of them
 
 DATE EXTRACTION:

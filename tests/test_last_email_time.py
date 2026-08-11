@@ -462,6 +462,33 @@ class TestReprocessBypass:
 
         checker._update_job_status(
             sheets.get_all_jobs()[0],
+            _classification("oa"),
+            _email(datetime(2026, 7, 30, 9, 4, 11), "new"),
+        )
+        updated = checker._update_job_status(
+            sheets.get_all_jobs()[0],
+            _classification("technical"),
+            _email(datetime(2026, 7, 23, 20, 28, 52), "old"),
+        )
+
+        assert updated is True
+        assert checker.stats["stale_skipped"] == 0
+        assert _cell(sheets, row, "status") == "Technical"
+
+    def test_the_older_email_still_writes_over_a_terminal_row(self, checker_config):
+        """
+        The staleness guard is bypassed; the regression guard is not, and never was.
+
+        Written with a rejection first because that pairing used to assert the opposite:
+        Rejected was absent from STATUS_RANK, so a replayed confirmation reset the row to
+        Applied. Everything the email carries is still recorded — only the status holds.
+        """
+        sheets = MockSheetsClient()
+        row = _seed_job(sheets)
+        checker = _checker(checker_config, sheets, reprocess=True)
+
+        checker._update_job_status(
+            sheets.get_all_jobs()[0],
             _classification("rejection"),
             _email(datetime(2026, 7, 30, 9, 4, 11), "new"),
         )
@@ -472,7 +499,11 @@ class TestReprocessBypass:
         )
 
         assert updated is True
-        assert _cell(sheets, row, "status") == "Applied"
+        assert checker.stats["stale_skipped"] == 0
+        assert checker.stats["status_regression_blocked"] == 1
+        assert _cell(sheets, row, "status") == "Rejected"
+        # The older email was still processed, which is what --reprocess is for.
+        assert _cell(sheets, row, "last_email_time") == "07/23/2026 20:28:52"
 
 
 # =============================================================================

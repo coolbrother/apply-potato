@@ -6,7 +6,14 @@ Stores data in memory instead of making API calls.
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from src.sheets import JobRow, COLUMNS, HEADERS, STATUS_NEW, date_already_recorded
+from src.sheets import (
+    JobRow,
+    COLUMNS,
+    HEADERS,
+    STATUS_NEW,
+    company_matches,
+    date_already_recorded,
+)
 
 
 class MockSheetsClient:
@@ -75,13 +82,12 @@ class MockSheetsClient:
                 row[col_idx] = str(value) if value is not None else ""
 
     def find_jobs_by_company(self, company_name: str) -> List[JobRow]:
-        """Find jobs by company name."""
+        """Find jobs by company name. Shares the real client's matching rule."""
         all_jobs = self.get_all_jobs()
-        company_lower = company_name.lower()
 
         matches = [
             job for job in all_jobs
-            if company_lower in job.company.lower()
+            if company_matches(company_name, job.company)
         ]
 
         matches.sort(key=lambda j: j.added_date, reverse=True)
@@ -90,12 +96,11 @@ class MockSheetsClient:
     def find_jobs_by_company_and_position(self, company_name: str, position: str) -> List[JobRow]:
         """Find jobs by company and position."""
         all_jobs = self.get_all_jobs()
-        company_lower = company_name.lower()
         position_lower = position.lower()
 
         matches = [
             job for job in all_jobs
-            if company_lower in job.company.lower()
+            if company_matches(company_name, job.company)
             and position_lower in job.position.lower()
         ]
 

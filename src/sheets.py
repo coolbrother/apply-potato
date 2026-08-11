@@ -4,6 +4,7 @@ Handles all CRUD operations for the Jobs tab.
 """
 
 import logging
+import re
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -318,6 +319,54 @@ def reached_stage(job, stage: str) -> bool:
     if (getattr(job, "status", "") or "") == stage:
         return True
     return bool(str(getattr(job, STAGE_DATE_COLUMN[stage], "") or "").strip())
+
+
+def company_matches(needle: str, company: str) -> bool:
+    """
+    Whether `needle` names `company`, matching only on whole alphanumeric runs.
+
+    Plain containment is what let a Maven Securities assessment invite land on Akuna
+    Capital row 317: the classifier had picked "UNA" out of the vendor's host name
+    `webassessment.una-arcticshores.com`, and "una" is inside "akuna capital". Since row
+    317 was the only un-struck Akuna row, the collision looked like a unique match and
+    was written without hesitation. Run over the sheet as it stood — every company name in
+    it plus every bare first word, 403 needles over 4694 rows — this rule changed 19 of
+    them, and every single change was a false positive going away: "GE" no longer claiming
+    Generac and Ivy Tech ColleGE, "ING" no longer claiming NightwING and Jump TradING,
+    "SK" no longer claiming The Trade DeSK. Nothing gained a row.
+
+    The test is "no alphanumeric on either side" rather than `\\b`, because `\\b` is
+    defined against the neighbouring character and so misbehaves whenever the needle
+    itself ends in punctuation — "Yahoo!" would stop matching "Yahoo! Inc". Punctuation
+    and spaces are boundaries, so "Packard" matches "Hewlett-Packard" and "Amazon"
+    matches "Amazon.com".
+
+    A lower-to-upper transition is a boundary too, but only on the trailing side: the
+    sheet spells row 453 "JPMorganChase", and a bare "JPMorgan" has to keep reaching it.
+    Leading camel case is deliberately not a boundary, since brand names lead — honouring
+    it would put "Scale" back on TribalScale. This cannot reopen the original bug either
+    way: it reads the case of `company`, and "Akuna" has no transition at "una".
+
+    Substring matching within a name is kept on purpose: an email says "Goldman" where
+    the sheet says "Goldman Sachs". Only the ragged edge is removed. An empty needle
+    matches nothing, where containment matched every row in the sheet.
+    """
+    needle = (needle or "").strip()
+    company = company or ""
+    if not needle:
+        return False
+
+    for hit in re.finditer(re.escape(needle), company, re.IGNORECASE):
+        start, end = hit.span()
+        if start > 0 and company[start - 1].isalnum():
+            continue
+        if end < len(company) and company[end].isalnum():
+            # Except where the name is concatenated: "JPMorgan" + "Chase".
+            if not (company[end].isupper() and company[end - 1].islower()):
+                continue
+        return True
+
+    return False
 
 
 def col_letter(col_index: int) -> str:
@@ -881,7 +930,7 @@ class SheetsClient:
 
     def find_jobs_by_company(self, company_name: str) -> List[JobRow]:
         """
-        Find jobs by company name (case-insensitive partial match).
+        Find jobs by company name (case-insensitive, on alphanumeric boundaries).
 
         Args:
             company_name: Company name to search for.
@@ -890,11 +939,10 @@ class SheetsClient:
             List of matching JobRow objects, sorted by added_date descending.
         """
         all_jobs = self.get_all_jobs()
-        company_lower = company_name.lower()
 
         matches = [
             job for job in all_jobs
-            if company_lower in job.company.lower()
+            if company_matches(company_name, job.company)
         ]
 
         # Sort by added_date descending (most recent first)
@@ -904,7 +952,14 @@ class SheetsClient:
 
     def find_jobs_by_company_and_position(self, company_name: str, position: str) -> List[JobRow]:
         """
-        Find jobs by company name AND position (case-insensitive partial match).
+        Find jobs by company name AND position.
+
+        The company is matched on alphanumeric boundaries, the position by plain
+        containment. The asymmetry is deliberate: the company is the row's identity and a
+        ragged-edge hit there picks the wrong employer outright, while the position only
+        narrows within one employer's rows and routinely differs by a suffix — an email
+        saying "Software Engineer Intern" has to keep matching a row spelled
+        "Software Engineer Internship", which a boundary would forbid.
 
         Args:
             company_name: Company name to search for.
@@ -914,12 +969,11 @@ class SheetsClient:
             List of matching JobRow objects, sorted by added_date descending.
         """
         all_jobs = self.get_all_jobs()
-        company_lower = company_name.lower()
         position_lower = position.lower()
 
         matches = [
             job for job in all_jobs
-            if company_lower in job.company.lower()
+            if company_matches(company_name, job.company)
             and position_lower in job.position.lower()
         ]
 

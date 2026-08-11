@@ -24,6 +24,41 @@ from .gmail import EmailMessage
 logger = logging.getLogger(__name__)
 
 
+# A bare host name or URL, with no whitespace and at least one dot-separated label in
+# front of a TLD: "una-arcticshores.com", "https://greenhouse.io/x". Deliberately not
+# anchored on a TLD list — anything shaped like a host is shaped like a host.
+_HOSTNAME_RE = re.compile(
+    r"^(?:https?://)?(?:[a-z0-9-]+\.)+[a-z]{2,}(?:/\S*)?$",
+    re.IGNORECASE,
+)
+
+
+def drop_hostname_candidates(candidates: List[str]) -> List[str]:
+    """
+    Remove company candidates that are really the sending vendor's domain.
+
+    Assessment platforms mail on the employer's behalf, so their host names are all over
+    the body, and the model hands them back beside the real employer: a Maven Securities
+    invite yielded "UNA" and "una-arcticshores.com" from the assessment host. Those get
+    tried against the sheet like any other name, and a needless candidate is a needless
+    chance to match the wrong row.
+
+    The shape matched is a whole bare host, not any dotted string, so "St. Jude Medical"
+    is never at risk — a host has no spaces. A name that genuinely is host-shaped, like
+    "Amazon.com", does get dropped, which costs nothing while the model also returns
+    "Amazon" and costs nothing when it does not: if filtering would empty the list, the
+    original is kept. No candidates means no match at all, which is strictly worse than a
+    candidate that probably will not match.
+    """
+    kept = [c for c in candidates if not _HOSTNAME_RE.match((c or "").strip())]
+    if not kept:
+        return candidates
+    if len(kept) != len(candidates):
+        dropped = [c for c in candidates if c not in kept]
+        logger.debug(f"Dropped hostname company candidates: {dropped}")
+    return kept
+
+
 @dataclass
 class EmailClassification:
     """Result of email classification."""
@@ -297,6 +332,8 @@ class EmailClassifier:
                 company_candidates = [old_name]
             else:
                 logger.warning("No company names extracted from email")
+
+        company_candidates = drop_hostname_candidates(company_candidates)
 
         return EmailClassification(
             category=category,

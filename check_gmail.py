@@ -398,12 +398,22 @@ class GmailChecker:
         two, so it passes the staleness check and resets a row that has already reached
         OA. That is what happened to row 404.
 
-        Terminal outcomes are exempt: a rejection can arrive at any stage and is still
-        the truth. An unrecognised status on either side returns False, so an unknown
-        value is never silently swallowed.
+        Terminal outcomes are exempt as the *incoming* status: a rejection can arrive at
+        any stage and is still the truth. As the *current* status they are the opposite —
+        a floor nothing non-terminal may cross. Rejected and Ghosted are absent from
+        STATUS_RANK, so before this they fell through the unrecognised-status guard below
+        and any stage could overwrite them; that is how a misdirected assessment invite
+        moved row 317 from Rejected back to OA. A row that has ended stays ended until a
+        person says otherwise.
+
+        An unrecognised status on either side returns False, so an unknown value is never
+        silently swallowed.
         """
         if new_status in TERMINAL_STATUSES:
             return False
+
+        if (current or "").strip() in TERMINAL_STATUSES:
+            return True
 
         current_rank = STATUS_RANK.get((current or "").strip())
         new_rank = STATUS_RANK.get(new_status)
