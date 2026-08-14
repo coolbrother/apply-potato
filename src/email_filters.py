@@ -31,16 +31,34 @@ SENSITIVE_PATTERNS = [
      "OTP/verification code"),
     # Passcode/login code/access code
     (r"(?:passcode|login.?code|access.?code).{0,10}[:\s]+\d{4,8}\b", "passcode/login code"),
-    # Password reset links (generic patterns)
-    (r"(?:reset|change|update).{0,20}password", "password reset"),
     # Temporary password
     (r"(?:temporary|temp).{0,10}password", "temporary password"),
     # Bank account numbers (generic)
     (r"(?:account|routing).{0,10}(?:number|#).{0,10}\d{8,17}\b", "bank account number"),
 ]
 
+# Patterns matched against the subject only.
+#
+# A password reset is what an email is *about*, not something it happens to mention, and
+# the difference only shows in the subject. An application confirmation that walks you
+# through setting up a candidate account says "reset password" in passing, and scanning
+# the body threw the whole email away — a row sat at New through an application that had
+# really been made. Measured over 60 days of real inbox traffic, every genuine reset mail
+# announced itself in its subject, so the subject alone loses none of them.
+#
+# Both word orders are needed: the verb form leads ("reset your password") and the noun
+# form trails ("Password Reset"). Half the real ones used the noun form, and the old
+# body-wide scan had been catching those by accident.
+SUBJECT_PATTERNS = [
+    (r"(?:reset|change|update).{0,20}password|password.{0,20}(?:reset|change)",
+     "password reset"),
+]
+
 # Compiled patterns for efficiency
 _COMPILED_PATTERNS = [(re.compile(p, re.IGNORECASE), desc) for p, desc in SENSITIVE_PATTERNS]
+_COMPILED_SUBJECT_PATTERNS = [
+    (re.compile(p, re.IGNORECASE), desc) for p, desc in SUBJECT_PATTERNS
+]
 
 
 def check_content_safety(email: EmailMessage) -> Tuple[bool, str]:
@@ -50,8 +68,14 @@ def check_content_safety(email: EmailMessage) -> Tuple[bool, str]:
     Returns:
         (is_safe, reason)
     """
+    subject = email.subject or ""
+
+    for pattern, description in _COMPILED_SUBJECT_PATTERNS:
+        if pattern.search(subject):
+            return False, f"Sensitive content detected: {description}"
+
     # Combine subject and body for scanning
-    content = f"{email.subject}\n{email.body_text or ''}"
+    content = f"{subject}\n{email.body_text or ''}"
 
     for pattern, description in _COMPILED_PATTERNS:
         if pattern.search(content):
