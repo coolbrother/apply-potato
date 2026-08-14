@@ -8,7 +8,7 @@ import re
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 from dataclasses import dataclass
 
 from google.oauth2.credentials import Credentials
@@ -321,6 +321,60 @@ def reached_stage(job, stage: str) -> bool:
     return bool(str(getattr(job, STAGE_DATE_COLUMN[stage], "") or "").strip())
 
 
+# Words a company carries at the end of its legal name and drops from its own
+# abbreviation: nobody writes IBM Corporation's acronym as "IBMC".
+LEGAL_SUFFIXES = {
+    "inc", "incorporated", "llc", "lllp", "llp", "lp", "corp", "corporation",
+    "co", "company", "ltd", "limited", "plc", "sa", "ag", "nv", "bv", "gmbh",
+    "holdings", "holding",
+}
+
+# Below three characters an acronym stops identifying anyone: on the sheet as it stands
+# "MS" is Maven Securities, Morgan Stanley and Motorola Solutions at once, and "CS" is
+# Citadel Securities, which is not who the world means by CS.
+MIN_ACRONYM_LEN = 3
+
+
+def company_acronyms(name: str) -> Set[str]:
+    """
+    The acronyms `name` could reasonably be written as, upper-cased.
+
+    Both the whole name's initials and the initials left after peeling off trailing legal
+    suffixes, since a company may or may not be quoted with its "Inc." — "Tyson Foods,
+    Inc." yields TFI and TF. "&" is dropped rather than counted, so Stanley Black &
+    Decker is SBD and not SB&D. Suffix peeling stops at the first word that is not a
+    suffix, which is what keeps "Group" in Jump Trading Group (JTG) — the word is part of
+    the name traders use, not boilerplate.
+    """
+    words = [w for w in re.split(r"[^A-Za-z0-9&]+", name or "") if w and w != "&"]
+    found = set()
+    while len(words) >= 2:
+        found.add("".join(word[0] for word in words).upper())
+        if words[-1].lower() not in LEGAL_SUFFIXES:
+            break
+        words = words[:-1]
+    return {acronym for acronym in found if len(acronym) >= MIN_ACRONYM_LEN}
+
+
+def as_acronym(text: str) -> Optional[str]:
+    """
+    `text` as an acronym token, or None when it is not one.
+
+    Requires all caps: a company written out in title case is a name, and reading "Sun"
+    as an acronym would hand ordinary English words the power to claim a row. Trailing
+    legal suffixes come off first, because a classifier reading a signature block reports
+    "IBM Corporation" as readily as "IBM" and both are the same three letters.
+    """
+    words = [w for w in re.split(r"[^A-Za-z0-9&]+", text or "") if w and w != "&"]
+    while len(words) > 1 and words[-1].lower() in LEGAL_SUFFIXES:
+        words = words[:-1]
+    # Punctuation goes last, so "I.B.M." and "SB&D" arrive as the letters they stand for.
+    bare = re.sub(r"[^A-Za-z0-9]", "", "".join(words))
+    if len(bare) < MIN_ACRONYM_LEN or not bare.isalpha() or not bare.isupper():
+        return None
+    return bare
+
+
 def company_matches(needle: str, company: str) -> bool:
     """
     Whether `needle` names `company`, matching only on whole alphanumeric runs.
@@ -350,9 +404,21 @@ def company_matches(needle: str, company: str) -> bool:
     Substring matching within a name is kept on purpose: an email says "Goldman" where
     the sheet says "Goldman Sachs". Only the ragged edge is removed. An empty needle
     matches nothing, where containment matched every row in the sheet.
+
+    Failing that, one side may be the other's acronym, in either direction: IBM writes to
+    students as IBM while row 631 was scraped as "International Business Machines
+    Corporation", so its offer of an OA sat unmatched and the row stayed New. Substring
+    matching cannot reach across an abbreviation, since none of the letters are adjacent.
+    Swept over the sheet — 296 companies, 510 needles being every company name, every bare
+    first word and every acronym any of those names yields — this reached 80 needles that
+    previously matched nothing at all, each landing on exactly one company (IBM, HRT,
+    CTC, BOA, TTD, PSU, NFCU…). No needle that already identified a single row was turned
+    into a tie, because `MIN_ACRONYM_LEN` holds the collision-dense two-letter forms out:
+    at two characters "Western Digital" would start claiming the six rows filed under
+    "WD" alongside the row it correctly matches today.
     """
     needle = (needle or "").strip()
-    company = company or ""
+    company = (company or "").strip()
     if not needle:
         return False
 
@@ -364,6 +430,14 @@ def company_matches(needle: str, company: str) -> bool:
             # Except where the name is concatenated: "JPMorgan" + "Chase".
             if not (company[end].isupper() and company[end - 1].islower()):
                 continue
+        return True
+
+    # The email abbreviates what the sheet spells out, or the reverse.
+    needle_acronym = as_acronym(needle)
+    if needle_acronym and needle_acronym in company_acronyms(company):
+        return True
+    company_acronym = as_acronym(company)
+    if company_acronym and company_acronym in company_acronyms(needle):
         return True
 
     return False

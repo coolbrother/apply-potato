@@ -21,6 +21,8 @@ from src.sheets import (
     STATUS_OA,
     STATUS_OFFER,
     STATUS_REJECTED,
+    as_acronym,
+    company_acronyms,
     company_matches,
 )
 
@@ -120,6 +122,103 @@ class TestCompanyMatches:
 
     def test_needle_surrounded_by_spaces_mid_name(self):
         assert company_matches("Morgan", "JP Morgan Chase")
+
+
+# =============================================================================
+# company_matches — acronyms
+#
+# Row 631 was scraped as "International Business Machines Corporation" and IBM's mail
+# says IBM, so a confirmation and an OA both passed the row by and left it New.
+# =============================================================================
+
+class TestAcronymMatching:
+    """One side abbreviating the other, in either direction."""
+
+    def test_the_ibm_case(self):
+        assert company_matches("IBM", "International Business Machines Corporation")
+
+    def test_the_needle_may_carry_a_suffix_too(self):
+        """A signature block gives the classifier "IBM Corporation" as readily as "IBM"."""
+        assert company_matches("IBM Corporation", "International Business Machines Corporation")
+        assert company_matches("IBM, Inc.", "International Business Machines Corporation")
+
+    def test_legal_suffix_is_optional(self):
+        """Quoted with or without the "Corporation", it is the same company."""
+        assert company_matches("IBMC", "International Business Machines Corporation")
+        assert company_matches("TFI", "Tyson Foods, Inc.")
+
+    def test_other_real_abbreviations_on_the_sheet(self):
+        assert company_matches("HRT", "Hudson River Trading")
+        assert company_matches("CTC", "Chicago Trading Company")
+        assert company_matches("BOA", "Bank of America")
+        assert company_matches("TTD", "The Trade Desk")
+        assert company_matches("NFCU", "Navy Federal Credit Union")
+
+    def test_the_sheet_may_hold_the_acronym_instead(self):
+        """Direction reversed: row says SEL, the email writes the name out."""
+        assert company_matches("Schweitzer Engineering Laboratories", "SEL")
+
+    def test_ampersand_is_dropped_not_counted(self):
+        """SBD, not SB&D — and punctuation in the needle is stripped, so both arrive."""
+        assert company_matches("SBD", "Stanley Black & Decker")
+        assert company_matches("SB&D", "Stanley Black & Decker")
+
+    def test_group_is_part_of_the_name(self):
+        """Suffix peeling stops at the first non-suffix word, so JTG survives."""
+        assert company_matches("JTG", "Jump Trading Group")
+
+    def test_two_letter_acronyms_are_refused(self):
+        """
+        The collision-dense end of the range. On the sheet as it stands MS is Maven
+        Securities, Morgan Stanley and Motorola Solutions at once.
+        """
+        assert not company_matches("MS", "Morgan Stanley")
+        assert not company_matches("MS", "Maven Securities")
+        assert not company_matches("CS", "Citadel Securities")
+        assert not company_matches("GE", "Garff Enterprises")
+
+    def test_two_letters_would_have_cost_a_correct_match(self):
+        """
+        "Western Digital" identifies row 637 today and must keep doing so; at two
+        characters it would also claim the six rows filed under "WD" and go ambiguous.
+        """
+        assert not company_matches("Western Digital", "WD")
+
+    def test_title_case_is_a_name_not_an_acronym(self):
+        """
+        Only an all-caps token reads as an acronym, so an ordinary word cannot claim a
+        row by spelling out its initials.
+        """
+        assert not company_matches("Sun", "Stanford University Network")
+        assert not company_matches("Ibm", "International Business Machines Corporation")
+
+    def test_the_akuna_bug_stays_shut(self):
+        assert not company_matches("UNA", "Akuna Capital")
+
+    def test_initials_of_an_unrelated_company_do_not_match(self):
+        assert not company_matches("HRT", "Hudson Bay Capital")
+        assert not company_matches("IBM", "Intel")
+
+    def test_single_word_company_has_no_acronym(self):
+        assert company_acronyms("Stripe") == set()
+        assert not company_matches("STR", "Stripe")
+
+    def test_acronym_set(self):
+        assert company_acronyms("International Business Machines Corporation") == {
+            "IBM", "IBMC",
+        }
+        assert company_acronyms("Two Sigma Investments, LP") == {"TSI", "TSIL"}
+
+    def test_as_acronym_recognises_only_acronyms(self):
+        assert as_acronym("IBM") == "IBM"
+        assert as_acronym("I.B.M.") == "IBM"
+        assert as_acronym("IBM Corporation") == "IBM"
+        assert as_acronym("WD Inc") is None  # still too short to identify anyone
+        assert as_acronym("WD") is None
+        assert as_acronym("Ibm") is None
+        assert as_acronym("RTX9") is None
+        assert as_acronym("") is None
+        assert as_acronym(None) is None
 
 
 # =============================================================================
