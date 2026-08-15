@@ -13,6 +13,7 @@ from src.sheets import (
     STATUS_NEW,
     company_matches,
     date_already_recorded,
+    url_contains_requisition,
 )
 
 
@@ -88,6 +89,20 @@ class MockSheetsClient:
         matches = [
             job for job in all_jobs
             if company_matches(company_name, job.company)
+        ]
+
+        matches.sort(key=lambda j: j.added_date, reverse=True)
+        return matches
+
+    def find_jobs_by_requisition_id(self, ids) -> List[JobRow]:
+        """Find jobs by requisition id. Shares the real client's matching rule."""
+        ids = {str(i) for i in (ids or set()) if str(i)}
+        if not ids:
+            return []
+
+        matches = [
+            job for job in self.get_all_jobs()
+            if any(url_contains_requisition(job.position_url or "", i) for i in ids)
         ]
 
         matches.sort(key=lambda j: j.added_date, reverse=True)

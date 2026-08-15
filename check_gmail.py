@@ -30,7 +30,7 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 
 from src.config import get_config, Config
 from src.logging_config import setup_logging
-from src.gmail import GmailClient, get_gmail_clients, EmailMessage
+from src.gmail import GmailClient, get_gmail_clients, EmailMessage, message_text
 from src.email_filters import apply_privacy_filters
 from src.email_classifier import EmailClassifier, get_classifier, EmailClassification
 from src.needs_review import (
@@ -50,6 +50,7 @@ from src.sheets import (
     normalize_date,
     parse_sheet_datetime,
     reached_stage,
+    requisition_ids,
     STATUS_APPLIED,
     STATUS_GHOSTED,
     STATUS_NEW,
@@ -189,6 +190,10 @@ class GmailChecker:
         has been tried and only a tie remains, the AI is asked to pick from the tied
         rows; it answers null unless one is clearly right.
 
+        A requisition id is tried first, because it names the posting where a company
+        name names the employer, and an ATS routinely signs for the parent rather than
+        the subsidiary that owns the job.
+
         Args:
             classification: Email classification with company candidates and position
             email: The email itself, needed to ask the AI to break a tie. Without it
@@ -198,9 +203,6 @@ class GmailChecker:
             A MatchOutcome: the row when exactly one candidate resolved, otherwise
             the reason no row could be chosen.
         """
-        if not classification.company_candidates:
-            return MatchOutcome(reason=REASON_NO_COMPANY)
-
         position = classification.position
         tie: Optional[MatchOutcome] = None
         retired_only = False  # A company whose rows all exist but are all struck
@@ -212,6 +214,35 @@ class GmailChecker:
             if rows and not kept:
                 retired_only = True
             return kept
+
+        # A requisition id quoted in the email and stored in a row's URL is the one
+        # identifier both sides agree on. Only an unambiguous hit is taken; anything
+        # else falls through to the company candidates untouched.
+        #
+        # Uniqueness is judged over every row, struck ones included, and only then is
+        # the survivor checked for strikethrough. Doing it the other way round lets a
+        # struck row collapse a genuine ambiguity into false certainty: a Handshake job
+        # alert listing several IMC postings quotes three ids spanning six rows, five of
+        # them struck, and would otherwise have been read as a receipt for the sixth.
+        if email is not None:
+            by_id = self.sheets_client.find_jobs_by_requisition_id(
+                requisition_ids(message_text(email))
+            )
+            if len(by_id) == 1:
+                unstruck = live(by_id)
+                if unstruck:
+                    logger.info(
+                        f"Matched by requisition id: row {unstruck[0].row_number} "
+                        f"({unstruck[0].company})"
+                    )
+                    return MatchOutcome(job=unstruck[0])
+            elif len(by_id) > 1:
+                logger.debug(
+                    f"Requisition id matched {len(by_id)} rows, falling back to company"
+                )
+
+        if not classification.company_candidates:
+            return MatchOutcome(reason=REASON_NO_COMPANY)
 
         # Try each company candidate
         for company in classification.company_candidates:

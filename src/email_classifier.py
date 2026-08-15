@@ -10,7 +10,6 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-from bs4 import BeautifulSoup
 from openai import OpenAI, APIError, RateLimitError, APITimeoutError
 from google import genai
 from google.genai import types as genai_types
@@ -18,7 +17,7 @@ from google.api_core import exceptions as google_exceptions
 
 from .config import Config, get_config
 from .sheets import COMPLETABLE_STAGES
-from .gmail import EmailMessage
+from .gmail import EmailMessage, body_as_text
 
 
 logger = logging.getLogger(__name__)
@@ -134,13 +133,7 @@ class EmailClassifier:
             EmailClassification if successful, None if classification failed
         """
         # Get body - prefer plain text, convert HTML if needed
-        body = email.body_text
-        if not body and email.body_html:
-            soup = BeautifulSoup(email.body_html, 'html.parser')
-            for element in soup(['script', 'style']):
-                element.decompose()
-            body = soup.get_text(separator='\n', strip=True)
-            logger.debug(f"Converted HTML to plain text ({len(body)} chars)")
+        body = body_as_text(email)
 
         if not body:
             logger.warning(f"Email has no body content: {email.subject}")
@@ -381,12 +374,7 @@ class EmailClassifier:
         if not candidates:
             return None
 
-        body = email.body_text
-        if not body and email.body_html:
-            soup = BeautifulSoup(email.body_html, "html.parser")
-            for element in soup(["script", "style"]):
-                element.decompose()
-            body = soup.get_text(separator="\n", strip=True)
+        body = body_as_text(email)
 
         listing = "\n".join(
             f"- row {c['row']}: {c.get('company', '')} | {c.get('position', '')}"

@@ -443,6 +443,48 @@ def company_matches(needle: str, company: str) -> bool:
     return False
 
 
+# A requisition number is the one token in an application email that names the posting
+# rather than the employer. Six digits is where they start being identifiers instead of
+# quantities: it clears years, street numbers, ZIPs and dollar amounts, and every real id
+# seen on this sheet is seven or eight.
+MIN_REQUISITION_DIGITS = 6
+
+_DIGIT_RUN = re.compile(rf"\d{{{MIN_REQUISITION_DIGITS},}}")
+
+
+def requisition_ids(text: str) -> Set[str]:
+    """
+    Every long digit run in `text`, any of which may be a requisition number.
+
+    No attempt is made to tell an id from a tracking number here. A candidate only
+    matters if some row's URL contains it, and that intersection is what does the work —
+    guessing which number "looks like" a requisition id would only add a way to be wrong.
+    """
+    return set(_DIGIT_RUN.findall(text or ""))
+
+
+def url_contains_requisition(url: str, requisition_id: str) -> bool:
+    """
+    Whether `url` carries this exact requisition id, bounded by non-digits.
+
+    Workday appends it to the slug ("...--Summer-2027---Onsite-_01999999"), so the
+    boundary matters in one direction only, but both are checked: without it "1999999"
+    would match inside "01999999" and a shorter id could claim a longer one's posting.
+    """
+    if not url or not requisition_id:
+        return False
+
+    for hit in re.finditer(re.escape(requisition_id), url):
+        start, end = hit.span()
+        if start > 0 and url[start - 1].isdigit():
+            continue
+        if end < len(url) and url[end].isdigit():
+            continue
+        return True
+
+    return False
+
+
 def col_letter(col_index: int) -> str:
     """
     Convert a 0-indexed column number to A1 letters: 0 -> A, 25 -> Z, 26 -> AA.
@@ -1020,6 +1062,34 @@ class SheetsClient:
         ]
 
         # Sort by added_date descending (most recent first)
+        matches.sort(key=lambda j: j.added_date, reverse=True)
+
+        return matches
+
+    def find_jobs_by_requisition_id(self, ids) -> List[JobRow]:
+        """
+        Find jobs whose posting URL carries any of these requisition ids.
+
+        The id identifies the posting, where the company name identifies at best the
+        employer and at worst its parent: Workday signs Pratt & Whitney's receipts
+        "RTX Corporation", which reaches none of that subsidiary's rows and five of the
+        parent's. The id in the same email reaches exactly one.
+
+        Args:
+            ids: Candidate requisition ids, as returned by requisition_ids().
+
+        Returns:
+            Matching JobRow objects, sorted by added_date descending.
+        """
+        ids = {str(i) for i in (ids or set()) if str(i)}
+        if not ids:
+            return []
+
+        matches = [
+            job for job in self.get_all_jobs()
+            if any(url_contains_requisition(job.position_url or "", i) for i in ids)
+        ]
+
         matches.sort(key=lambda j: j.added_date, reverse=True)
 
         return matches
