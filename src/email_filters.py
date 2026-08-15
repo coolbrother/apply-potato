@@ -31,6 +31,13 @@ SENSITIVE_PATTERNS = [
      "OTP/verification code"),
     # Passcode/login code/access code
     (r"(?:passcode|login.?code|access.?code).{0,10}[:\s]+\d{4,8}\b", "passcode/login code"),
+    # The same thing with the words the other way round: "the code for <product>
+    # account login: 778899". The rule above needs "code" adjacent to "login", so a
+    # sender that puts the product name between them was handing over a live code.
+    # The gap is capped and may not cross a sentence or a line, which is what keeps
+    # "log in to see the code of conduct" and "the dress code ... Login at reception"
+    # out of it.
+    (r"code[^.\n]{0,60}log\s?-?\s?in[^\d]{0,10}\d{4,8}\b", "login code"),
     # Temporary password
     (r"(?:temporary|temp).{0,10}password", "temporary password"),
     # Bank account numbers (generic)

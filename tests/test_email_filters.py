@@ -101,6 +101,22 @@ class TestBodyPatterns:
     def test_meeting_passcode(self):
         assert not is_safe("Seminar", "Meeting ID: 111 2222 3333\nPasscode: 666777")
 
+    def test_login_code_with_words_between(self):
+        """
+        "code" need not sit next to "login". An HR platform writes "the code for
+        <product> account login:", which the adjacent-words rule walked straight past.
+        """
+        assert not is_safe("Login code", "Following is the code for Acme account login:\n778899")
+        assert not is_safe("Sign in", "Use the code below to log in: 445566")
+        assert not is_safe("Access", "Your code for account login is 998877")
+
+    def test_login_and_code_in_the_same_sentence_are_not_enough(self):
+        """The gap is capped and cannot cross a sentence, or ordinary prose trips it."""
+        assert is_safe("Onsite", "The dress code for the onsite is business casual. "
+                                 "Login at reception, desk 4471.")
+        assert is_safe("Portal", "Please log in to your candidate portal to see the "
+                                 "code of conduct for 2027")
+
     def test_credit_card(self):
         assert not is_safe("Receipt", "Card 4111 1111 1111 1111 charged")
 
