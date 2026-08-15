@@ -64,13 +64,25 @@ stage_done:
 - Results are not completions. "Assessment Results", an outcome, or anything that moves
   the candidate forward or ends the process is "offer", "rejection", or the next stage.
 
+A CUE COUNTS WHEREVER IT APPEARS. The phrases listed under each category below are
+things to look for in the subject OR the body, and the body is the stronger evidence
+of the two. Many employers send every message under one generic subject — "Application
+Update", "Status change", "A message about your application" — while the body says
+plainly what happened. Read the body and classify on what it says; never fall back to
+"unknown" merely because the subject is uninformative.
+
 confirmation:
-- Subject contains: "application received", "thank you for applying", "application submitted"
-- Body confirms application was received
+- Subject or body contains: "application received", "thank you for applying",
+  "application submitted", "thank you for your interest in our open position"
+- A first acknowledgement that the application arrived is a confirmation even when the
+  subject is generic and even when the body adds that it is under review: "Thank you for
+  applying to X. We are reviewing your application" is a confirmation, not "unknown".
+  Being reviewed is what an application does after it is submitted; it is not a further
+  stage, and no stage has been reached beyond applying.
 - Usually automated, from ATS systems
 
 oa:
-- Subject contains: "assessment", "coding challenge", "HackerRank", "CodeSignal"
+- Subject or body contains: "assessment", "coding challenge", "HackerRank", "CodeSignal"
 - Body contains link to assessment platform
 - KEY RULE: "oa" requires something to COMPLETE — a test, assessment, or coding
   challenge the candidate is being asked to take, usually with a deadline. A link
@@ -84,22 +96,22 @@ oa:
 - Usually has a deadline mentioned
 
 phone:
-- Subject contains: "phone screen", "phone interview", "recruiter call"
+- Subject or body contains: "phone screen", "phone interview", "recruiter call"
 - Body mentions scheduling a phone call
 - Usually 15-30 minutes, initial screening
 
 technical:
-- Subject contains: "technical interview", "onsite", "virtual onsite", "coding interview"
+- Subject or body contains: "technical interview", "onsite", "virtual onsite", "coding interview"
 - Body mentions technical rounds, coding problems, system design
 - Usually longer (1-4 hours), may be multiple rounds
 
 offer:
-- Subject contains: "offer", "congratulations", "welcome to the team"
+- Subject or body contains: "offer", "congratulations", "welcome to the team"
 - Body contains offer details (salary, start date, benefits)
 - Positive, celebratory tone
 
 rejection:
-- Subject contains: "unfortunately", "other candidates", "not moving forward"
+- Subject or body contains: "unfortunately", "other candidates", "not moving forward"
 - Body is polite but negative
 - Usually short, generic
 
