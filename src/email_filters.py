@@ -7,7 +7,7 @@ import re
 import logging
 from typing import Tuple
 
-from .gmail import EmailMessage
+from .gmail import EmailMessage, body_as_text
 
 
 logger = logging.getLogger(__name__)
@@ -74,8 +74,11 @@ def check_content_safety(email: EmailMessage) -> Tuple[bool, str]:
         if pattern.search(subject):
             return False, f"Sensitive content detected: {description}"
 
-    # Combine subject and body for scanning
-    content = f"{subject}\n{email.body_text or ''}"
+    # Combine subject and body for scanning. The body must be read through
+    # body_as_text: an HTML-only message has an empty body_text, and half of real inbox
+    # traffic is HTML-only, so scanning that field alone left the patterns below
+    # inspecting nothing but the subject for every second email.
+    content = f"{subject}\n{body_as_text(email)}"
 
     for pattern, description in _COMPILED_PATTERNS:
         if pattern.search(content):
