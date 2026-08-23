@@ -206,6 +206,7 @@ class GmailChecker:
         position = classification.position
         tie: Optional[MatchOutcome] = None
         retired_only = False  # A company whose rows all exist but are all struck
+        named_struck = False  # The row naming this email's position was struck
 
         def live(rows: List[JobRow]) -> List[JobRow]:
             """Drop rows the user struck through, remembering if that emptied the list."""
@@ -248,7 +249,8 @@ class GmailChecker:
         for company in classification.company_candidates:
             # Try company + position first (if position available)
             if position:
-                matches = live(self.sheets_client.find_jobs_by_company_and_position(company, position))
+                named = self.sheets_client.find_jobs_by_company_and_position(company, position)
+                matches = live(named)
                 if len(matches) == 1:
                     logger.debug(f"Matched by company + position: {company} + {position}")
                     return MatchOutcome(job=matches[0])
@@ -258,6 +260,26 @@ class GmailChecker:
                         reason=REASON_AMBIGUOUS, company=company, candidates=matches
                     )
                     continue
+                elif named:
+                    # The email names a position, rows carry that exact position, and
+                    # every one of them is struck. The company lookup below still runs:
+                    # striking the position match is exactly how a canonical row is
+                    # nominated, and that row often carries a different title, so
+                    # abandoning the search here would break the mark-canonical
+                    # workflow (see test_strikethrough).
+                    #
+                    # What is given up is the *guess*. If the widened lookup lands on
+                    # one live row, that is the canonical row and it is taken. If it
+                    # ties, the AI is not asked to choose, because every remaining
+                    # candidate is a role the email did not name — that is how a
+                    # "Software Engineer Intern" receipt came to be written onto a
+                    # "Trading Intern" row.
+                    logger.info(
+                        f"'{company}' + '{position}' matches only struck row(s) "
+                        f"{[job.row_number for job in named]}; widening, but a tie "
+                        f"will not be guessed at"
+                    )
+                    named_struck = True
 
             # Fall back to company only
             matches = live(self.sheets_client.find_jobs_by_company(company))
@@ -294,7 +316,7 @@ class GmailChecker:
             # role is language interpretation, so ask the AI rather than score the strings.
             # It is told to answer null unless one row is clearly right, and a row it did
             # not offer is rejected, so the worst case is the review flag we already had.
-            if email is not None and tie.candidates:
+            if email is not None and tie.candidates and not named_struck:
                 chosen = self.classifier.choose_job_row(
                     email,
                     [

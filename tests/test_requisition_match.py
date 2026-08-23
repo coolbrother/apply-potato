@@ -294,3 +294,116 @@ class TestMessageText:
 
     def test_empty_email(self):
         assert body_as_text(_email(subject="", body="", html="")) == ""
+
+
+# =============================================================================
+# A struck exact-position match ends the search
+#
+# A receipt naming one role was written onto a different role's row: the row naming
+# that role was struck, so the matcher widened to the employer's other roles and let
+# the tie-break choose. Striking is deliberate, so it is an answer, not a gap.
+# =============================================================================
+
+class TestStruckPositionMatch:
+
+    def _sheets(self, named, by_company):
+        sheets = MagicMock()
+        sheets.find_jobs_by_requisition_id.return_value = []
+        sheets.find_jobs_by_company_and_position.return_value = named
+        sheets.find_jobs_by_company.return_value = by_company
+        return sheets
+
+    def test_does_not_guess_between_other_roles(self, checker_config):
+        """
+        The case that misrouted a receipt: the named row was struck, the search widened
+        to the employer's other roles, and the tie-break picked one of them. Widening is
+        allowed — it is how a canonical row is reached — but the guess is not.
+        """
+        named = [_row(4, "TradingCo", "Software Engineer Intern (Commodities)")]
+        siblings = [_row(1, "TradingCo", "Quantitative Risk Intern"),
+                    _row(2, "TradingCo", "Trading Intern (Commodities)")]
+        checker = _checker(checker_config, self._sheets(named, siblings), struck={4})
+
+        outcome = checker._find_matching_job(
+            _classification(["TradingCo"], position="Software Engineer Intern (Commodities)"),
+            _email(),
+        )
+
+        assert outcome.matched is False
+        # The AI is never asked to choose between roles the email did not name.
+        checker.classifier.choose_job_row.assert_not_called()
+
+    def test_a_live_named_row_still_wins(self, checker_config):
+        named = [_row(4, "TradingCo", "Software Engineer Intern (Commodities)")]
+        checker = _checker(checker_config, self._sheets(named, []), struck=set())
+
+        outcome = checker._find_matching_job(
+            _classification(["TradingCo"], position="Software Engineer Intern (Commodities)"),
+            _email(),
+        )
+
+        assert outcome.job.row_number == 4
+
+    def test_one_struck_one_live_still_resolves(self, checker_config):
+        """Striking the duplicate is exactly how a canonical row is singled out."""
+        named = [_row(4, "TradingCo", "Software Engineer Intern (Commodities)"),
+                 _row(5, "TradingCo", "Software Engineer Intern (Commodities)")]
+        checker = _checker(checker_config, self._sheets(named, []), struck={5})
+
+        outcome = checker._find_matching_job(
+            _classification(["TradingCo"], position="Software Engineer Intern (Commodities)"),
+            _email(),
+        )
+
+        assert outcome.job.row_number == 4
+
+    def test_no_named_row_at_all_still_falls_back_to_company(self, checker_config):
+        """Nothing carries that position, so the company fallback is untouched."""
+        checker = _checker(
+            checker_config,
+            self._sheets([], [_row(9, "TradingCo", "Some Other Intern")]),
+            struck=set(),
+        )
+
+        outcome = checker._find_matching_job(
+            _classification(["TradingCo"], position="A Role Nobody Tracks"), _email()
+        )
+
+        assert outcome.job.row_number == 9
+
+    def test_a_single_live_row_is_still_taken(self, checker_config):
+        """
+        The mark-canonical workflow: the duplicate carrying the email's title is struck
+        and the surviving row has a different title. One live row is not a guess.
+        """
+        named = [_row(4, "TradingCo", "Software Engineer Intern")]
+        checker = _checker(
+            checker_config,
+            self._sheets(named, [_row(4, "TradingCo", "Software Engineer Intern"),
+                                 _row(9, "TradingCo", "Data Intern")]),
+            struck={4},
+        )
+
+        outcome = checker._find_matching_job(
+            _classification(["TradingCo"], position="Software Engineer Intern"), _email()
+        )
+
+        assert outcome.job.row_number == 9
+
+    def test_a_later_candidate_still_gets_its_turn(self, checker_config):
+        """Only the same-company widening is given up, not the remaining candidates."""
+        sheets = MagicMock()
+        sheets.find_jobs_by_requisition_id.return_value = []
+        sheets.find_jobs_by_company_and_position.side_effect = lambda company, position: (
+            [_row(4, "TradingCo", "Software Engineer Intern")] if company == "TradingCo"
+            else [_row(7, "CommoditiesCo", "Software Engineer Intern")]
+        )
+        sheets.find_jobs_by_company.return_value = []
+        checker = _checker(checker_config, sheets, struck={4})
+
+        outcome = checker._find_matching_job(
+            _classification(["TradingCo", "CommoditiesCo"], position="Software Engineer Intern"),
+            _email(),
+        )
+
+        assert outcome.job.row_number == 7
