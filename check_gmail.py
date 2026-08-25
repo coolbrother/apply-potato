@@ -714,20 +714,41 @@ class GmailChecker:
         at_stage = [r for r in candidates if reached_stage(r, stage)]
 
         if len(at_stage) != 1:
-            reason = REASON_AMBIGUOUS if len(at_stage) > 1 else REASON_UNTRACKED
+            ambiguous = len(at_stage) > 1
+            reason = REASON_AMBIGUOUS if ambiguous else REASON_UNTRACKED
             logger.warning(
                 f"{stage} completion from {email.sender_email}: "
                 f"{len(at_stage)} row(s) of '{company_used or '?'}' reached {stage} — "
                 f"not guessing; flagged for review"
             )
             self.stats["no_match"] += 1
-            if reason == REASON_AMBIGUOUS:
+            if ambiguous:
                 self.stats["ambiguous"] += 1
             self._log_needs_review(
                 client, email, classification,
                 MatchOutcome(reason=reason, company=company_used, candidates=at_stage),
             )
-            client.mark_as_processed(email.message_id)
+
+            # A completion that found several rows at the stage needs a person: more
+            # runs will not resolve it, so consume it as before and let the review log
+            # carry it.
+            #
+            # A completion that found *none* is a different thing — usually a race. The
+            # invite that puts the row at this stage may not have landed yet, and a
+            # receipt can arrive minutes behind it. Marking this processed retires the
+            # email permanently: the row reaches the stage a moment later and nothing
+            # ever comes back for it, which is how an assessment that was genuinely
+            # taken ends up recorded only by hand. Leave it unprocessed so the next run
+            # tries again. The retry is bounded without any extra state, because the
+            # fetch window is `after:` GMAIL_LOOKBACK_DAYS — once the email falls out
+            # of that window it stops being fetched at all.
+            if ambiguous:
+                client.mark_as_processed(email.message_id)
+            else:
+                logger.info(
+                    f"Leaving {stage} completion from {email.sender_email} unprocessed; "
+                    f"a later run can record it once a row reaches {stage}"
+                )
             return False
 
         job = at_stage[0]

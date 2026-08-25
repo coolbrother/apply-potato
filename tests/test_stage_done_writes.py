@@ -138,3 +138,59 @@ class TestMatching:
 
         assert result is False
         checker.sheets_client.update_job.assert_not_called()
+
+
+class TestRetryWhenNoRowHasReachedTheStage:
+    """
+    A completion that found no row is usually a race, not an error: the invite that puts
+    the row at the stage may land minutes later. Consuming it retires the email for good,
+    and the assessment ends up recorded only by hand — which is what happened to a real
+    receipt whose invite had not yet been applied when it arrived.
+    """
+
+    def _refuse(self, checker, job, client):
+        checker._log_needs_review = MagicMock()
+        checker.sheets_client.find_jobs_by_company.return_value = job
+        email = SimpleNamespace(message_id="m1", sender_email="noreply@platform.example",
+                                subject="Thank you for submitting", date=RECEIPT_AT)
+        classification = SimpleNamespace(category="stage_done", stage_completed="OA",
+                                         company_candidates=["Millennium"])
+        return checker._record_stage_done(client, email, classification)
+
+    def test_an_orphaned_completion_is_left_for_the_next_run(self, checker):
+        job = _job(status="Applied")
+        job.oa_date = ""
+        client = MagicMock()
+
+        result = self._refuse(checker, [job], client)
+
+        assert result is False
+        client.mark_as_processed.assert_not_called()
+
+    def test_it_is_recorded_once_the_row_reaches_the_stage(self, checker):
+        """The retry that the previous test makes possible."""
+        client = MagicMock()
+        waiting = _job(status="Applied")
+        waiting.oa_date = ""
+        assert self._refuse(checker, [waiting], client) is False
+
+        # The invite lands, the row reaches OA, and the same email is seen again.
+        _, written = _run(checker, _job(status="OA"), checker_client=client)
+
+        assert written["completed_stages"] == "OA"
+        assert written["last_event"] == "Assessment Submitted"
+        client.mark_as_processed.assert_called_once()
+
+    def test_an_ambiguous_completion_is_still_consumed(self, checker):
+        """Two rows at the stage needs a person; more runs will not resolve it."""
+        client = MagicMock()
+
+        result = self._refuse(checker, [_job(518), _job(519)], client)
+
+        assert result is False
+        client.mark_as_processed.assert_called_once()
+
+    def test_a_successful_mark_still_consumes_the_email(self, checker):
+        client = MagicMock()
+        _run(checker, _job(), checker_client=client)
+        client.mark_as_processed.assert_called_once()
