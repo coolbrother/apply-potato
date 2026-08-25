@@ -375,6 +375,25 @@ def as_acronym(text: str) -> Optional[str]:
     return bare
 
 
+def shows_application(job) -> bool:
+    """
+    Whether this row carries evidence that the application was actually made.
+
+    Status past New, or an Application Date, either alone. Deliberately weak evidence:
+    the sheet is full of rows that were really applied to and still read New because
+    their confirmation was misfiled, dropped by a filter, or named a company the row did
+    not. So this can never be read as "New means not applied" — only as "this one row,
+    unlike its siblings, has something on it".
+
+    Used solely to break a tie the matcher could not otherwise resolve. It never
+    overrides a match; it only chooses among rows that were about to be abandoned.
+    """
+    status = (getattr(job, "status", "") or "").strip()
+    if status and status != STATUS_NEW:
+        return True
+    return bool(str(getattr(job, "application_date", "") or "").strip())
+
+
 def company_matches(needle: str, company: str) -> bool:
     """
     Whether `needle` names `company`, matching only on whole alphanumeric runs.

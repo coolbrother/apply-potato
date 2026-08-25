@@ -407,3 +407,105 @@ class TestStruckPositionMatch:
         )
 
         assert outcome.job.row_number == 7
+
+
+# =============================================================================
+# Breaking a tie on evidence of having applied
+#
+# An assessment platform's mail names the employer and no role at all — "confirms your
+# submission to <company>" is the whole body — so position matching has nothing to work
+# with and every row of that employer ties. Six rows tied, five never touched and one
+# sitting at Applied, and the email was abandoned.
+# =============================================================================
+
+class TestTieBrokenByApplicationEvidence:
+
+    def _tied(self, checker_config, rows, struck=None):
+        sheets = MagicMock()
+        sheets.find_jobs_by_requisition_id.return_value = []
+        sheets.find_jobs_by_company_and_position.return_value = []
+        sheets.find_jobs_by_company.return_value = rows
+        checker = _checker(checker_config, sheets, struck=struck)
+        checker.classifier.choose_job_row.return_value = None   # the AI declines
+        return checker
+
+    def test_one_applied_row_among_untouched_ones_wins(self, checker_config):
+        rows = [
+            _row(24, "AssetCo", "Summer Analyst Data Engineer"),
+            _row(25, "AssetCo", "Data Engineer Summer Analyst"),
+            _row(19, "AssetCo", "Software Engineer Summer Analyst", status="Applied"),
+            _row(26, "AssetCo", "Data Science Summer Analyst"),
+        ]
+        checker = self._tied(checker_config, rows)
+
+        outcome = checker._find_matching_job(_classification(["AssetCo"]), _email())
+
+        assert outcome.job.row_number == 19
+
+    def test_an_application_date_alone_is_evidence(self, checker_config):
+        """A row can sit at New with its confirmation recorded only as a date."""
+        applied = _row(19, "AssetCo", "Software Engineer Summer Analyst")
+        applied.application_date = "08/19/2026 21:00:00"
+        rows = [_row(24, "AssetCo", "Data Engineer"), applied]
+        checker = self._tied(checker_config, rows)
+
+        outcome = checker._find_matching_job(_classification(["AssetCo"]), _email())
+
+        assert outcome.job.row_number == 19
+
+    def test_two_applied_rows_stay_ambiguous(self, checker_config):
+        rows = [
+            _row(1, "AssetCo", "A", status="Applied"),
+            _row(2, "AssetCo", "B", status="OA"),
+            _row(3, "AssetCo", "C"),
+        ]
+        checker = self._tied(checker_config, rows)
+
+        outcome = checker._find_matching_job(_classification(["AssetCo"]), _email())
+
+        assert outcome.matched is False
+        assert [j.row_number for j in outcome.candidates] == [1, 2, 3]
+
+    def test_no_applied_row_stays_ambiguous(self, checker_config):
+        rows = [_row(1, "AssetCo", "A"), _row(2, "AssetCo", "B")]
+        checker = self._tied(checker_config, rows)
+
+        outcome = checker._find_matching_job(_classification(["AssetCo"]), _email())
+
+        assert outcome.matched is False
+
+    def test_the_ai_still_wins_when_it_answers(self, checker_config):
+        """Evidence is the fallback, not a replacement for reading the email."""
+        rows = [
+            _row(1, "AssetCo", "A", status="Applied"),
+            _row(2, "AssetCo", "B"),
+        ]
+        checker = self._tied(checker_config, rows)
+        checker.classifier.choose_job_row.return_value = 2
+
+        outcome = checker._find_matching_job(_classification(["AssetCo"]), _email())
+
+        assert outcome.job.row_number == 2
+
+    def test_not_applied_when_the_named_row_was_struck(self, checker_config):
+        """
+        Every remaining candidate is then a role the email never named, so picking the
+        applied one is the same wrong guess as picking any other.
+        """
+        sheets = MagicMock()
+        sheets.find_jobs_by_requisition_id.return_value = []
+        sheets.find_jobs_by_company_and_position.return_value = [
+            _row(9, "TradingCo", "Software Engineer Intern")
+        ]
+        sheets.find_jobs_by_company.return_value = [
+            _row(1, "TradingCo", "Trading Intern", status="Applied"),
+            _row(2, "TradingCo", "Quant Intern"),
+        ]
+        checker = _checker(checker_config, sheets, struck={9})
+        checker.classifier.choose_job_row.return_value = None
+
+        outcome = checker._find_matching_job(
+            _classification(["TradingCo"], position="Software Engineer Intern"), _email()
+        )
+
+        assert outcome.matched is False

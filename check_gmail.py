@@ -51,6 +51,7 @@ from src.sheets import (
     parse_sheet_datetime,
     reached_stage,
     requisition_ids,
+    shows_application,
     STATUS_APPLIED,
     STATUS_GHOSTED,
     STATUS_NEW,
@@ -339,6 +340,27 @@ class GmailChecker:
                             return MatchOutcome(
                                 job=job, duplicates=twins if len(twins) > 1 else []
                             )
+
+            # The AI declined, or named a row it was not offered. Before giving up: if
+            # exactly one of the tied rows shows an application and the rest show
+            # nothing at all, that is evidence, and better than abandoning the email.
+            # An assessment platform's mail routinely names the employer and no role —
+            # "confirms your submission to <company>" is the whole body — so position
+            # matching has nothing to work with and every row of that employer ties.
+            #
+            # Withheld when the row naming the email's position was struck, because then
+            # every remaining candidate is a role the email never mentioned, and picking
+            # the applied one among those is the same wrong guess as picking any other.
+            if not named_struck:
+                applied = [job for job in tie.candidates if shows_application(job)]
+                if len(applied) == 1:
+                    logger.info(
+                        f"Tie of {len(tie.candidates)} resolved on application evidence: "
+                        f"row {applied[0].row_number} ({applied[0].company} — "
+                        f"{applied[0].status or 'has an Application Date'})"
+                    )
+                    return MatchOutcome(job=applied[0])
+
             return tie
         return MatchOutcome(
             reason=REASON_ALL_RETIRED if retired_only else REASON_UNTRACKED,
