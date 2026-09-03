@@ -577,19 +577,26 @@ class JobScraper:
         """
         candidates = []
 
-        repo_list = [f"{r.owner_repo}@{r.branch}" for r in self.config.github_repos]
-        candidates.append((
-            "github",
-            lambda: self.github_parser.fetch_all_jobs(),
-            f"repos: {repo_list}",
-        ))
-
+        # Job List first, deliberately. run() processes all_listings in order, so
+        # whatever a source contributes last waits behind every listing before it.
+        # These URLs were pasted in by hand — they are the ones the user actually
+        # wants — while the repo sources are a bulk feed. Ordering github first put
+        # 4 hand-picked postings behind 335 never-seen repo listings after the
+        # 2026-08-30 outage, two of them with application mail already sitting in
+        # needs_review waiting for a row that had not been created yet.
         if self.job_list_parser:
             candidates.append((
                 "sheets",
                 lambda: self.job_list_parser.fetch_all_jobs(),
                 f"sheet: {self.config.job_list_sheet_id}",
             ))
+
+        repo_list = [f"{r.owner_repo}@{r.branch}" for r in self.config.github_repos]
+        candidates.append((
+            "github",
+            lambda: self.github_parser.fetch_all_jobs(),
+            f"repos: {repo_list}",
+        ))
 
         if self.config.newsletter_enabled and self.config.newsletter_sources:
             names = [s.name for s in self.config.newsletter_sources]
