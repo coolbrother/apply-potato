@@ -12,7 +12,12 @@ from typing import Optional
 from urllib.parse import urlparse, urlunparse, parse_qs, urlencode
 
 from .config import Config, get_config
-from .sheets import SheetsClient, get_sheets_client
+from .sheets import (
+    SheetsClient,
+    company_matches,
+    get_sheets_client,
+    has_live_application,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -148,6 +153,9 @@ class DeduplicationChecker:
         # Company/role/place/term keys for every row, so a seat already on the sheet is
         # recognised even when a second requisition gives it a different URL.
         self._cached_identities: Optional[set] = None
+        # Companies with an application still in flight. Their other postings are
+        # almost always the same requisition relisted, and are skipped.
+        self._applied_companies: set = set()
         self._filtered_urls: set = set()
         self._seen_source_urls: dict = {}  # {normalized_url: timestamp_str}
         self._extraction_failures: list = []  # [{url, timestamp, company, title, content_preview, reason}]
@@ -170,9 +178,19 @@ class DeduplicationChecker:
         """
         jobs = self.sheets_client.get_all_jobs()
 
+        # Struck rows are retired by hand and do not speak for their company. If the
+        # only applied row at a company was struck, the company opens back up, which
+        # errs toward showing a job rather than hiding one.
+        try:
+            struck = self.sheets_client.get_struck_rows()
+        except Exception as e:
+            logger.warning(f"Could not read struck rows for company cache: {e}")
+            struck = set()
+
         # Build set of normalized URLs
         self._cached_urls = set()
         self._cached_identities = set()
+        self._applied_companies = set()
         for job in jobs:
             if job.position_url:
                 normalized = normalize_url(job.position_url)
@@ -180,11 +198,35 @@ class DeduplicationChecker:
             key = identity_key(job.company, job.position, job.location, job.season_year)
             if key:
                 self._cached_identities.add(key)
+            if (job.company and job.row_number not in struck
+                    and has_live_application(job)):
+                self._applied_companies.add(job.company.strip())
 
         logger.info(
             f"Refreshed job cache: {len(self._cached_urls)} existing job URLs, "
-            f"{len(self._cached_identities)} distinct postings"
+            f"{len(self._cached_identities)} distinct postings, "
+            f"{len(self._applied_companies)} companies with a live application"
         )
+
+    def company_has_live_application(self, company: str) -> Optional[str]:
+        """
+        The name of the already-applied company this posting belongs to, or None.
+
+        Matched with `company_matches` rather than string equality, in both directions,
+        so "American Express" on the sheet still recognises a posting scraped as
+        "American Express Company" and vice versa. The sheet spells one employer several
+        ways and the extractor is not consistent either.
+
+        Returns the stored name rather than a bool so the caller can say which row's
+        company it collided with.
+        """
+        if not company or not company.strip():
+            return None
+        candidate = company.strip()
+        for applied in self._applied_companies:
+            if company_matches(candidate, applied) or company_matches(applied, candidate):
+                return applied
+        return None
 
     def job_exists_by_identity(self, company: str, position: str,
                                location: str, season_year: str) -> bool:

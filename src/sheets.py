@@ -394,6 +394,28 @@ def shows_application(job) -> bool:
     return bool(str(getattr(job, "application_date", "") or "").strip())
 
 
+def has_live_application(job) -> bool:
+    """
+    Whether this row is an application still in play.
+
+    `shows_application` asks whether the application was ever made; this asks whether
+    it is still going. The difference is the whole point: a company whose only
+    application ended in a rejection is open again, and a second role there is worth
+    seeing, while a company with an application in flight only produces noise.
+
+    Terminal is Rejected or Ghosted, the same pair check_gmail.py treats as ends. Note
+    the asymmetry with `shows_application`, which counts *any* status past New: there a
+    rejection is still evidence the user applied, which is exactly what that tie-break
+    needs. Here it is evidence they are finished.
+    """
+    if not shows_application(job):
+        return False
+    return (getattr(job, "status", "") or "").strip() not in (
+        STATUS_REJECTED,
+        STATUS_GHOSTED,
+    )
+
+
 def company_matches(needle: str, company: str) -> bool:
     """
     Whether `needle` names `company`, matching only on whole alphanumeric runs.

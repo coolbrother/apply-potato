@@ -137,6 +137,7 @@ class JobScraper:
             "listings_found": 0,
             "duplicates_skipped": 0,
             "duplicate_postings": 0,
+            "applied_company_skipped": 0,
             "filtered_skipped": 0,
             "scrape_failures": 0,
             "extraction_failures": 0,
@@ -449,6 +450,24 @@ class JobScraper:
             # Praxis internship four times under four requisition ids, giving four rows
             # and an ambiguous match for every Praxis email afterwards. URL dedup cannot
             # see that; the job's own attributes can.
+            # An application to this company is already in flight. Identity dedup
+            # cannot catch these: American Express relists one Campus Undergraduate
+            # programme per location and Booz Allen separates its 2027 Summer Games
+            # roles by a comma, so company, position, location and term never line up.
+            # A company whose applications have all been rejected or ghosted is not
+            # skipped — that seat is open again.
+            if self.config.skip_applied_companies:
+                applied_as = self.dedup_checker.company_has_live_application(
+                    job_data["company"]
+                )
+                if applied_as:
+                    logger.info(
+                        f"  Skipping: application already in flight at {applied_as} — "
+                        f"{job_data['company']} - {job_data['position']}"
+                    )
+                    self.stats["applied_company_skipped"] += 1
+                    continue
+
             if self.dedup_checker.job_exists_by_identity(
                 job_data["company"], job_data["position"],
                 job_data["location"], job_data["season_year"],
@@ -707,6 +726,7 @@ class JobScraper:
         logger.info(f"  Listings found: {self.stats['listings_found']}")
         logger.info(f"  Duplicates skipped: {self.stats['duplicates_skipped']}")
         logger.info(f"  Same posting, different URL: {self.stats['duplicate_postings']}")
+        logger.info(f"  Company already applied to: {self.stats['applied_company_skipped']}")
         logger.info(f"  Filtered skipped: {self.stats['filtered_skipped']}")
         logger.info(f"  Scrape failures: {self.stats['scrape_failures']}")
         logger.info(f"  Extraction failures: {self.stats['extraction_failures']}")

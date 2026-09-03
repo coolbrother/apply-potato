@@ -166,6 +166,10 @@ class Config:
     render_delay_seconds: float  # JS render delay after page load
     retry_base_delay_seconds: float  # Base delay for exponential backoff
     seen_sources_ttl_days: int  # How long to remember processed source URLs
+    # Skip a posting when an application to that company is still in flight. Companies
+    # that relist one requisition per location otherwise fill the sheet with rows that
+    # identity dedup cannot collapse.
+    skip_applied_companies: bool
     log_level: str
     oauth_local_port: int
     oauth_timeout_seconds: int
@@ -521,6 +525,8 @@ def load_config(env_path: Optional[Path] = None) -> Config:
         render_delay_seconds=_get_float("RENDER_DELAY_SECONDS", 1.0),
         retry_base_delay_seconds=_get_float("RETRY_BASE_DELAY_SECONDS", 5.0),
         seen_sources_ttl_days=_get_int("SEEN_SOURCES_TTL_DAYS", 90),
+        skip_applied_companies=_get_optional("SKIP_APPLIED_COMPANIES", "true").lower()
+        in ("true", "1", "yes"),
         log_level=_get_optional("LOG_LEVEL", "INFO").upper(),
         oauth_local_port=_get_int("OAUTH_LOCAL_PORT", 8888),
         oauth_timeout_seconds=_get_int("OAUTH_TIMEOUT_SECONDS", 120),
