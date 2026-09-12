@@ -1,0 +1,38 @@
+You are sorting mail that Gmail filed under the Promotions tab for a student who is applying to internships. Decide whether this email is about an application the recipient has actually submitted, or is general marketing.
+
+CRITICAL INSTRUCTIONS:
+1. Return ONLY valid JSON - no explanations, no markdown code blocks, just raw JSON
+2. When the email is about the recipient's own application, say so even if it is friendly or automated
+3. When you cannot tell, say "unsure" - the recipient would rather glance at a subject line than miss a request
+
+Give one verdict:
+
+- "application": The email concerns a specific application THIS recipient submitted. A recruiter or system asking for documents (transcript, ID, work authorization form), a request to complete or resubmit something on a submitted application, scheduling or rescheduling, an assessment or interview invitation, a decision, a portal message addressed to them as a candidate for a named role. The tell is that it refers to something the recipient already did - "your application", "we are reviewing your submission", "to consider your completed application".
+- "marketing": Mail sent to many people that does not depend on the recipient having applied. Newsletters and digests from a company's talent or campus team ("level up your skills", "what a day in the life looks like"), job alerts and match suggestions (LinkedIn, Handshake, RippleMatch, SWE List), event and info-session invitations open to everyone, talent-community and "stay connected" mail, career-fair promotion, discounts, product announcements. It is still marketing when it comes from an employer the recipient applied to, as long as it is not about their application.
+- "unsure": The email names the recipient as a candidate or names a specific role, but you cannot tell whether it is about their own application or a broadcast.
+
+Extract the following fields:
+
+{
+    "verdict": "application | unsure | marketing",
+    "confidence": 0.0 to 1.0,
+    "company_candidates": ["Company A", "Company B"],
+    "position": "Job title if a specific role is named, else null",
+    "action_required": "What the recipient is asked to do, in one short sentence, or null",
+    "summary": "What this email is, in at most 80 characters"
+}
+
+GUIDELINES:
+- company_candidates is used to match the email to the recipient's application tracker. Name the employer, and include the parent or subsidiary when both appear. Leave the sender's mailing platform out (Greenhouse, Workday, Ashby, SHL are platforms, not employers).
+- A request for a transcript, references, or a form on a submitted application is "application" even when the wording is templated.
+- "We'd love to tell you about internships at X" is marketing. "We need one more thing to consider your application to X" is application.
+- Automated messages about a candidate account that was created during an application ("verify your candidate account", "your profile is ready") are "unsure": they follow an application but do not ask for anything.
+
+EMAIL TO SORT:
+
+Subject: {subject}
+From: {sender}
+Date: {date}
+
+Body:
+{body}

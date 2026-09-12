@@ -153,6 +153,26 @@ class EmailClassifier:
             model_name = self.config.gemini_model
         logger.info(f"Classifying email using {self.config.ai_provider} ({model_name})")
 
+        raw_response = self.complete(prompt)
+        if not raw_response:
+            return None
+
+        # Parse the JSON response
+        result = self._parse_response(raw_response)
+        if result is None:
+            logger.error("Failed to parse AI response as JSON")
+            return None
+
+        return result
+
+    def complete(self, prompt: str) -> Optional[str]:
+        """
+        Send a prompt to the configured provider and return its text, or None.
+
+        Rate limits and timeouts back off and retry; other API errors give up. Shared by
+        classify() and the Promotions triage so a second prompt gets the same provider
+        handling without a second copy of this loop.
+        """
         raw_response: Optional[str] = None
 
         for attempt in range(self.config.max_retries):
@@ -188,15 +208,7 @@ class EmailClassifier:
 
         if not raw_response:
             logger.error("Failed to get response from AI after all retries")
-            return None
-
-        # Parse the JSON response
-        result = self._parse_response(raw_response)
-        if result is None:
-            logger.error("Failed to parse AI response as JSON")
-            return None
-
-        return result
+        return raw_response
 
     def _classify_openai(self, prompt: str) -> Optional[str]:
         """

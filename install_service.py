@@ -71,7 +71,15 @@ SCHEDULED_TASKS = {
         "script": "scripts/daily_summary.py",
         "plist_id": "com.applypotato.daily_summary",
         "times": [{"hour": 9, "minute": 0}, {"hour": 17, "minute": 0}],
-    }
+    },
+    "promotions_check": {
+        "win_task_name": r"ApplyPotato\PromotionsCheck",
+        "name": "ApplyPotato Promotions Check",
+        "description": "Reads the Gmail Promotions tab once a day and posts a Discord digest of mail about your applications at 5pm",
+        "script": "scripts/check_promotions.py",
+        "plist_id": "com.applypotato.promotions_check",
+        "times": [{"hour": 17, "minute": 0}],
+    },
 }
 
 # Past-tense labels for control action success messages

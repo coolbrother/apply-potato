@@ -29,6 +29,10 @@ python check_gmail.py              # Run once
 python check_gmail.py --scheduled  # Daemon mode
 python check_gmail.py --reprocess  # Re-classify already-seen emails
 
+# Promotions tab (once a day at 17:00 via scheduled task; notify-only, never writes the sheet)
+python scripts/check_promotions.py            # Post a Discord digest of Promotions mail about your applications
+python scripts/check_promotions.py --dry-run  # Print it instead; record nothing
+
 # First-time setup
 python setup_wizard.py             # Creates venv, installs deps, configures OAuth
 python install_service.py          # Installs as Windows/macOS background service
@@ -52,6 +56,8 @@ Two independent entry points (`scrape_jobs.py`, `check_gmail.py`) share the `src
 ### Gmail status pipeline (`check_gmail.py`)
 
 Fetch emails from Primary inbox → sort oldest-first → privacy filters (`email_filters.py`) → AI classification (`email_classifier.py`, same provider config) → fuzzy-match company to a Sheets row → skip if the email is older than the row's `Last Email Time` (column V) → update status + color + notes + `Last Email Time` → Discord notify on dream company changes.
+
+The fetch excludes the Promotions, Social and Forums tabs on every account. `scripts/check_promotions.py` covers Promotions separately, once a day: the AI triage in `prompts/promotion_triage.txt` drops marketing, and anything about an application is posted to Discord — with its sheet row when the checker's matcher finds exactly one, otherwise as subject and date for the user to review. It never writes to the sheet; the user moves a reported email to Primary and the next `check_gmail.py` pass handles the row.
 
 The staleness guard is why the batch is sorted: Gmail returns newest-first, and only strictly-newer emails may modify a row, so unsorted processing would apply one email per row and drop the rest. `--reprocess` bypasses the guard.
 
@@ -93,6 +99,7 @@ Single `.env` file (see `.env.example`). `get_config()` is a module-level single
 | `src/gmail.py` | Gmail API client, OAuth, Primary inbox only |
 | `src/email_classifier.py` | AI email classification → status category |
 | `src/email_filters.py` | Pre-AI noise filter for automated/transactional mail |
+| `src/promotions_scan.py` | Daily Promotions-tab triage → Discord digest (notify-only) |
 | `src/notifications.py` | Discord webhook alerts |
 | `src/auto_apply.py` | Dream company form detection + doc generation |
 | `src/docx_utils.py` | Word document manipulation for resume/cover letter |
@@ -105,6 +112,7 @@ Single `.env` file (see `.env.example`). `get_config()` is a module-level single
 - `data/filtered_jobs.json` — URLs that failed hard filters (skipped on re-runs)
 - `data/seen_sources.json` — GitHub/newsletter source URLs with TTL
 - `data/processed_emails.json` — Gmail message IDs already handled
+- `data/promotions_seen_<account>.json` — Promotions message IDs already triaged (30-day TTL)
 - `data/extraction_failures.json` — URLs where AI extraction failed
 - `auth/` — OAuth tokens (`gmail_token.json`, `sheets_token.json`); auto-refreshed, git-ignored
 - `browser-profile/` — Playwright persistent profile for anti-detection continuity
