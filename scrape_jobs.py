@@ -299,9 +299,13 @@ class JobScraper:
             scraper: Playwright scraper instance
 
         Returns:
-            None if skipped (duplicate/previously filtered)
+            None if skipped before extraction (URL seen, in the sheet, or previously filtered)
             True if job was added to Sheets
-            False if job was processed but filtered out or extraction failed
+            "Filtered: <reason>" if a position was rejected by the eligibility filter
+            "Closed: <reason>" if the posting is gone
+            "Skipped: <reason>" if every position was already on the sheet or belongs to
+                a company with an application in flight — only knowable after extraction
+            Any other string is a failure (blocked, extraction error, sheet write error)
         """
         # Normalize URL before scraping (e.g., strip /apply from Lever URLs)
         job_url = normalize_url(listing.url)
@@ -400,6 +404,8 @@ class JobScraper:
         # Process each extracted job (some postings have multiple positions)
         added_any = False
         filter_reason = None
+        skip_reason = None
+        add_error = None
         for extracted in extracted_jobs:
             # Log extracted data for debugging
             logger.debug(f"  Extracted job: company={extracted.company}, title={extracted.title}")
@@ -461,10 +467,11 @@ class JobScraper:
                     job_data["company"]
                 )
                 if applied_as:
-                    logger.info(
-                        f"  Skipping: application already in flight at {applied_as} — "
+                    skip_reason = (
+                        f"application already in flight at {applied_as} — "
                         f"{job_data['company']} - {job_data['position']}"
                     )
+                    logger.info(f"  Skipping: {skip_reason}")
                     self.stats["applied_company_skipped"] += 1
                     continue
 
@@ -472,12 +479,13 @@ class JobScraper:
                 job_data["company"], job_data["position"],
                 job_data["location"], job_data["season_year"],
             ):
-                logger.info(
-                    f"  Skipping: same posting already on the sheet — "
+                skip_reason = (
+                    f"same posting already on the sheet — "
                     f"{job_data['company']} - {job_data['position']} "
                     f"({job_data['location'] or 'no location'}, "
                     f"{job_data['season_year'] or 'no term'})"
                 )
+                logger.info(f"  Skipping: {skip_reason}")
                 self.stats["duplicate_postings"] += 1
                 continue
 
@@ -575,16 +583,50 @@ class JobScraper:
                     logger.warning(f"  Job description save failed (non-fatal): {e}")
 
             except Exception as e:
+                add_error = str(e)
                 logger.error(f"  Failed to add to Sheets: {e}")
 
         # Mark source URL as seen so we skip it on future runs
         self.dedup_checker.mark_source_seen(listing.url)
 
+        # A page can hold several positions with different fates. Anything added wins;
+        # then a filter rejection, because it says something about the posting; then a
+        # duplicate or in-flight skip, which is "already processed" that could only be
+        # decided after extraction. Falling through to a bare False used to label those
+        # skips "Filtered out" on the Job List with no note.
         if added_any:
             return True
         if filter_reason:
             return f"Filtered: {filter_reason}"
-        return False
+        if skip_reason:
+            return f"Skipped: {skip_reason}"
+        return f"Failed (could not add to Sheets: {add_error})"
+
+    @staticmethod
+    def _was_skipped(result) -> bool:
+        """
+        True when the listing produced nothing new: a pre-extraction skip (None) or a
+        post-extraction one ("Skipped: ..."). Neither counts toward --limit, which caps
+        new jobs, and both read "Already Processed" on the Job List.
+        """
+        return result is None or (isinstance(result, str) and result.startswith("Skipped: "))
+
+    def _record_job_list_result(self, listing: JobListing, result) -> None:
+        """Write a _process_listing result back to the Job List row it came from."""
+        if not self.job_list_parser or listing.source_repo != "sheets-list":
+            return
+        if result is None:
+            self.job_list_parser.mark_row(listing.url, "Already Processed")
+        elif result is True:
+            self.job_list_parser.mark_row(listing.url, "Done")
+        elif isinstance(result, str) and result.startswith("Skipped: "):
+            self.job_list_parser.mark_row(listing.url, "Already Processed", notes=result[len("Skipped: "):])
+        elif isinstance(result, str) and result.startswith("Filtered: "):
+            self.job_list_parser.mark_row(listing.url, "Filtered out", notes=result[len("Filtered: "):])
+        elif isinstance(result, str) and result.startswith("Closed: "):
+            self.job_list_parser.mark_row(listing.url, "Closed", notes=result[len("Closed: "):])
+        else:  # failure string (blocked, extraction error, sheet write error)
+            self.job_list_parser.mark_row(listing.url, "Failed", notes=result)
 
     def _build_sources(self, only: Optional[List[str]] = None) -> List[tuple]:
         """
@@ -692,27 +734,13 @@ class JobScraper:
                     hit_limit = False
                     try:
                         result = await self._process_listing(listing, scraper)
-                        # result is None for skipped (dup/filtered), True/False/str for processed
-                        if result is not None:
+                        if not self._was_skipped(result):
                             new_jobs_processed += 1
                     except Exception as e:
                         logger.error(f"Error processing {listing.url}: {e}")
                         result = None
 
-                    # Write result back to job list sheet if this listing came from there
-                    if self.job_list_parser and listing.source_repo == "sheets-list":
-                        if result is None:
-                            self.job_list_parser.mark_row(listing.url, "Already Processed")
-                        elif result is True:
-                            self.job_list_parser.mark_row(listing.url, "Done")
-                        elif isinstance(result, str) and result.startswith("Filtered: "):
-                            self.job_list_parser.mark_row(listing.url, "Filtered out", notes=result[len("Filtered: "):])
-                        elif isinstance(result, str) and result.startswith("Closed: "):
-                            self.job_list_parser.mark_row(listing.url, "Closed", notes=result[len("Closed: "):])
-                        elif result is False:
-                            self.job_list_parser.mark_row(listing.url, "Filtered out")
-                        else:  # failure string (blocked, extraction error, etc.)
-                            self.job_list_parser.mark_row(listing.url, "Failed", notes=result)
+                    self._record_job_list_result(listing, result)
 
                     # Small delay between requests
                     await asyncio.sleep(1)
