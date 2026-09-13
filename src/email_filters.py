@@ -61,6 +61,23 @@ SUBJECT_PATTERNS = [
      "password reset"),
 ]
 
+# Senders that never carry job mail: platforms the user's courses run on.
+#
+# This is not domain filtering in general — the AI decides what is job-related, and
+# that stays. It is the one class of sender whose mail the classifier cannot be taught
+# to ignore: a Gradescope receipt, "Successfully submitted to Homework 1", is a
+# past-tense receipt for the user's own submission, which is exactly the stage_done
+# signal, and the prompt deliberately does not require a recognised platform. Three
+# homework receipts in two weeks were flagged as OA completions with no row to match,
+# reached Discord as "Company not tracked", and — because an unmatched OA completion is
+# left unprocessed for the invite to catch up — were re-classified on every run.
+#
+# Matched on the sender's domain, including subdomains, so a platform that mails from
+# a regional host still counts.
+COURSEWORK_SENDER_DOMAINS = (
+    "gradescope.com",
+)
+
 # Compiled patterns for efficiency
 _COMPILED_PATTERNS = [(re.compile(p, re.IGNORECASE), desc) for p, desc in SENSITIVE_PATTERNS]
 _COMPILED_SUBJECT_PATTERNS = [
@@ -94,16 +111,37 @@ def check_content_safety(email: EmailMessage) -> Tuple[bool, str]:
     return True, "Content passed safety scan"
 
 
+def is_coursework_sender(email: EmailMessage) -> Tuple[bool, str]:
+    """
+    Whether the email comes from a platform on COURSEWORK_SENDER_DOMAINS.
+
+    Returns:
+        (is_coursework, reason)
+    """
+    address = (email.sender_email or "").strip().lower()
+    domain = address.rsplit("@", 1)[-1] if "@" in address else ""
+    for platform in COURSEWORK_SENDER_DOMAINS:
+        if domain == platform or domain.endswith("." + platform):
+            return True, f"Coursework platform: {platform}"
+    return False, ""
+
+
 def apply_privacy_filters(email: EmailMessage) -> Tuple[bool, str]:
     """
     Apply privacy filters to an email.
 
-    Only checks content safety - no domain filtering.
-    AI classifier decides if email is job-related.
+    Checks content safety, and drops mail from the coursework platforms listed in
+    COURSEWORK_SENDER_DOMAINS. No other domain filtering: the AI classifier decides
+    whether an email is job-related.
 
     Returns:
         (should_process, reason)
     """
+    coursework, reason = is_coursework_sender(email)
+    if coursework:
+        logger.info(f"Email filtered ({reason}): {email.subject}")
+        return False, reason
+
     safe, reason = check_content_safety(email)
     if not safe:
         logger.info(f"Email filtered (Content Safety): {reason}")

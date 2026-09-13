@@ -63,6 +63,12 @@ stage_done:
   arrives when the account is created, not when the test is submitted. That is "unknown".
 - Results are not completions. "Assessment Results", an outcome, or anything that moves
   the candidate forward or ends the process is "offer", "rejection", or the next stage.
+- A stage belongs to a JOB APPLICATION. The applicant is a student, and their courses
+  send receipts in the same past tense: "Successfully submitted to Homework 1",
+  "Problem Set 2 received", a graded assignment, a quiz. A submission to a course,
+  homework, problem set, lab, or exam — or anything whose subject carries a course code
+  such as "MATH4310" or "CS 4787" — is "unknown" with no company, never a completion,
+  whichever platform sent it (Gradescope, Canvas, a university CMS).
 
 A CUE COUNTS WHEREVER IT APPEARS. The phrases listed under each category below are
 things to look for in the subject OR the body, and the body is the stronger evidence

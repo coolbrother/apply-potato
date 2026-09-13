@@ -12,7 +12,7 @@ Usage:
 
 from datetime import datetime
 
-from src.email_filters import apply_privacy_filters, check_content_safety
+from src.email_filters import apply_privacy_filters, check_content_safety, is_coursework_sender
 from src.gmail import EmailMessage
 
 
@@ -202,3 +202,57 @@ class TestApplyPrivacyFilters:
         msg.body_text = None
         keep, _ = apply_privacy_filters(msg)
         assert keep
+
+
+# =============================================================================
+# Coursework platforms
+# =============================================================================
+
+def from_sender(address: str, subject: str = "Successfully submitted to Homework 1") -> EmailMessage:
+    msg = email(subject, "Your submission has been received.")
+    msg.sender = f"Platform <{address}>"
+    msg.sender_email = address
+    return msg
+
+
+class TestCourseworkSenders:
+    """
+    A homework receipt is a past-tense receipt for the user's own submission, which is
+    the stage_done signal exactly, so the classifier cannot be relied on to ignore it.
+    The sender can.
+    """
+
+    def test_gradescope_receipt_is_dropped_before_the_ai(self):
+        keep, reason = apply_privacy_filters(from_sender("no-reply@gradescope.com"))
+        assert not keep
+        assert reason == "Coursework platform: gradescope.com"
+
+    def test_subdomain_of_a_platform_counts(self):
+        keep, _ = apply_privacy_filters(from_sender("noreply@mail.gradescope.com"))
+        assert not keep
+
+    def test_matching_is_case_insensitive(self):
+        keep, _ = apply_privacy_filters(from_sender("No-Reply@Gradescope.COM"))
+        assert not keep
+
+    def test_a_lookalike_domain_is_not_a_platform(self):
+        keep, _ = apply_privacy_filters(from_sender("jobs@notgradescope.com"))
+        assert keep
+
+    def test_a_platform_name_in_the_local_part_is_not_a_match(self):
+        keep, _ = apply_privacy_filters(from_sender("gradescope.com@recruiting.example.com"))
+        assert keep
+
+    def test_the_same_receipt_from_an_employer_platform_still_reaches_the_ai(self):
+        keep, _ = apply_privacy_filters(from_sender("no-reply@hirevue.com", "Thank you for submitting your interview"))
+        assert keep
+
+    def test_missing_sender(self):
+        msg = from_sender("")
+        msg.sender_email = None
+        keep, _ = apply_privacy_filters(msg)
+        assert keep
+
+    def test_is_coursework_sender_reports_the_platform(self):
+        assert is_coursework_sender(from_sender("no-reply@gradescope.com")) == (True, "Coursework platform: gradescope.com")
+        assert is_coursework_sender(from_sender("talent@ibm.com")) == (False, "")
