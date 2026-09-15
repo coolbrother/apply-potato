@@ -205,6 +205,56 @@ async def test_sheet_write_failure_is_a_failure_not_filtered():
     assert result == "Failed (could not add to Sheets: quota exceeded)"
 
 
+# --- AUTO_APPLY_DETECT_REQUIREMENTS: the Resume / Cover Letter columns -------------
+
+
+def _discord():
+    """The dream-company check reads the salary thresholds off the Discord config."""
+    return SimpleNamespace(enabled=False, dream_company_min_salary_annual=None, dream_company_min_salary_hourly=None)
+
+
+class _RecordingSheets(_Sheets):
+    def __init__(self):
+        super().__init__()
+        self.updates = []
+
+    def update_job(self, row, fields):
+        self.updates.append((row, fields))
+
+
+async def test_detection_off_leaves_requirement_columns_blank():
+    """With the flag off, no detection runs and the two columns are not written as "No"."""
+    sheets = _RecordingSheets()
+    scraper = _scraper(_Dedup(), sheets=sheets)
+    scraper.config.discord = _discord()
+
+    result = await scraper._process_listing(_listing(), _Scraper())
+
+    assert result is True
+    assert sheets.updates == [(501, {"dream": "No"})]
+
+
+async def test_detection_on_fills_requirement_columns(monkeypatch):
+    """With the flag on, the orchestrator's verdict lands in both columns."""
+    class _Orchestrator:
+        def __init__(self, config):
+            pass
+
+        async def detect_only(self, **kwargs):
+            return True, False
+
+    monkeypatch.setattr("src.auto_apply.AutoApplyOrchestrator", _Orchestrator)
+    sheets = _RecordingSheets()
+    scraper = _scraper(_Dedup(), sheets=sheets)
+    scraper.config.discord = _discord()
+    scraper.config.auto_apply.detect_requirements = True
+
+    result = await scraper._process_listing(_listing(), _Scraper())
+
+    assert result is True
+    assert sheets.updates == [(501, {"dream": "No", "resume_needed": "Yes", "cover_letter_needed": "No"})]
+
+
 # --- _record_job_list_result: the word the sheet gets ------------------------------
 
 

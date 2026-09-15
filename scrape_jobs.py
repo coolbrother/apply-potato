@@ -548,13 +548,15 @@ class JobScraper:
                     except Exception as e:
                         logger.warning(f"  Requirement detection failed (non-fatal): {e}")
 
-                # Update Sheets with Dream / Resume / Cover Letter columns
+                # Update Sheets with Dream / Resume / Cover Letter columns. The two
+                # requirement columns are only written when detection ran: with it off
+                # they would read "No", which is a claim nobody checked.
                 try:
-                    self.sheets_client.update_job(row_num, {
-                        "dream": "Yes" if is_dream else "No",
-                        "resume_needed": "Yes" if needs_resume else "No",
-                        "cover_letter_needed": "Yes" if needs_cover_letter else "No",
-                    })
+                    updates = {"dream": "Yes" if is_dream else "No"}
+                    if self.config.auto_apply.detect_requirements:
+                        updates["resume_needed"] = "Yes" if needs_resume else "No"
+                        updates["cover_letter_needed"] = "Yes" if needs_cover_letter else "No"
+                    self.sheets_client.update_job(row_num, updates)
                 except Exception as e:
                     logger.warning(f"  Failed to update Resume/CL columns: {e}")
 
