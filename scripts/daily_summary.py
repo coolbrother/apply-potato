@@ -18,6 +18,7 @@ Windowed metrics (by timestamp stored in the Sheet / filled_forms.json):
   - Jobs with docs ready / Phase 2 complete (status New + docs on disk)
   - Forms filled but not yet submitted (filled_forms.json, status != Applied)
   - Jobs applied in window (application_date within window)
+  - New rejections in window, each named by row, company and position
   - Status emails needing review (needs_review.json), grouped by reason
 Running totals (NOT windowed):
   - Total pending (status == New)
@@ -66,6 +67,16 @@ DISCORD_LIMIT = 2000
 # Detail lines listed under each review reason before collapsing into a "+N more".
 # Discord caps a message at 2000 characters, so this stays small.
 MAX_REVIEW_DETAIL = 4
+
+# Rejections named one per line before collapsing into a "+N more".
+MAX_REJECTION_DETAIL = 8
+
+# Last Email Time is the email's own timestamp, not the moment check_gmail.py got to it.
+# A rejection that arrives at 8:57 and is processed at 9:05 is too late for the morning
+# summary and dated before the evening window opens, so it would be named by neither.
+# Opening the rejection window early closes that gap; the price is that a rejection
+# landing in the margin can be named twice, which beats never.
+REJECTION_WINDOW_MARGIN = timedelta(minutes=30)
 
 
 def _parse_dt(value) -> datetime | None:
@@ -263,6 +274,57 @@ def _stage_block(progress: dict[str, dict], budget: int) -> str:
 
     for with_position, limit in ((True, None), (False, None), (False, 3), (False, 0)):
         block = render(with_position, limit)
+        if len(block) <= budget:
+            return block
+    return ""
+
+
+def _new_rejections(jobs, struck: set, start: datetime, end: datetime) -> list:
+    """
+    Rows the Gmail checker turned Rejected inside the window, oldest first.
+
+    The checker writes Status, Last Event and Last Email Time together when it applies a
+    rejection, so all three must agree. Status alone is not enough: a Rejected row whose
+    last mail was something else was touched in the window but not rejected in it. A
+    rejection typed into the sheet by hand carries no timestamp and cannot be dated.
+    """
+    opens = start - REJECTION_WINDOW_MARGIN
+    found = []
+    for job in jobs:
+        if job.row_number in struck or job.status != STATUS_REJECTED:
+            continue
+        if event_key(job.last_event) != "rejection":
+            continue
+        rejected_at = _parse_dt(job.last_email_time)
+        if rejected_at is not None and opens <= rejected_at <= end:
+            found.append((rejected_at, job))
+
+    found.sort(key=lambda pair: pair[0])
+    return [job for _, job in found]
+
+
+def _rejection_block(rejections: list, budget: int) -> str:
+    """
+    Render one line per new rejection, trimming to fit `budget` characters.
+
+    Same reason as _stage_block: Discord rejects an over-long message outright, so the
+    list shortens into a "+N more" rather than costing the whole summary.
+    """
+    def label(job) -> str:
+        company = (job.company or "").strip()
+        position = (job.position or "").strip()
+        named = f"{company} — {position}" if position else company
+        return f"row {job.row_number} · {named}"
+
+    def render(limit: int) -> str:
+        shown = rejections[:limit]
+        body = "".join(f"\n     • {label(job)}" for job in shown)
+        if len(rejections) > len(shown):
+            body += f"\n     • +{len(rejections) - len(shown)} more"
+        return body
+
+    for limit in (MAX_REJECTION_DETAIL, 4, 2, 0):
+        block = render(limit)
         if len(block) <= budget:
             return block
     return ""
@@ -474,32 +536,41 @@ def main() -> None:
     totals = _season_totals(jobs, target_season)
     season_label = target_season or "All Time"
 
-    msg = (
-        f"📊 **Pipeline Summary — {range_label}**\n"
-        f"{divider}\n"
-        f"🔎 Scanned:                **{scanned}**\n"
-        f"🚫 Filtered out:           **{total_filtered}**{filter_lines}\n"
-        f"🔍 Discovered:             **{discovered}**\n"
-        f"⭐ Dream companies:         **{dream}**\n"
-        f"📄 Docs ready (Phase 2):   **{docs_ready}**\n"
-        f"📋 Filled, not submitted:  **{filled_not_submitted}**\n"
-        f"✅ Applied:                 **{applied}**\n"
-        f"⚠️ Needs review:           **{total_review}**{review_lines}\n"
-        f"{divider}\n"
-        f"📥 Total pending (New):    **{new_total}**\n"
-        f"\n"
-        f"🏆 **Season Totals — {season_label}**\n"
-        f"{divider}\n"
-        f"✅ Applied:                 **{totals['applied']}**\n"
-        f"📝 OA:                      **{totals['oa']}**\n"
-        f"📞 Phone interview:        **{totals['phone']}**\n"
-        f"💻 Technical interview:    **{totals['technical']}**\n"
-        f"🎉 Offer:                   **{totals['offer']}**\n"
-        f"❌ Rejected:                **{totals['rejected']}**\n"
-        f"👻 Ghosted:                 **{totals['ghosted']}**\n"
-        f"⏳ Awaiting response:      **{totals['awaiting']}**\n"
-        f"_Cumulative — a job counts toward every stage it reached._"
-    )
+    rejections = _new_rejections(jobs, struck_rows, start, end)
+    logger.info(f"New rejections in window: {[job.row_number for job in rejections]}")
+
+    def _message(rejection_lines: str) -> str:
+        return (
+            f"📊 **Pipeline Summary — {range_label}**\n"
+            f"{divider}\n"
+            f"🔎 Scanned:                **{scanned}**\n"
+            f"🚫 Filtered out:           **{total_filtered}**{filter_lines}\n"
+            f"🔍 Discovered:             **{discovered}**\n"
+            f"⭐ Dream companies:         **{dream}**\n"
+            f"📄 Docs ready (Phase 2):   **{docs_ready}**\n"
+            f"📋 Filled, not submitted:  **{filled_not_submitted}**\n"
+            f"✅ Applied:                 **{applied}**\n"
+            f"❌ New rejections:          **{len(rejections)}**{rejection_lines}\n"
+            f"⚠️ Needs review:           **{total_review}**{review_lines}\n"
+            f"{divider}\n"
+            f"📥 Total pending (New):    **{new_total}**\n"
+            f"\n"
+            f"🏆 **Season Totals — {season_label}**\n"
+            f"{divider}\n"
+            f"✅ Applied:                 **{totals['applied']}**\n"
+            f"📝 OA:                      **{totals['oa']}**\n"
+            f"📞 Phone interview:        **{totals['phone']}**\n"
+            f"💻 Technical interview:    **{totals['technical']}**\n"
+            f"🎉 Offer:                   **{totals['offer']}**\n"
+            f"❌ Rejected:                **{totals['rejected']}**\n"
+            f"👻 Ghosted:                 **{totals['ghosted']}**\n"
+            f"⏳ Awaiting response:      **{totals['awaiting']}**\n"
+            f"_Cumulative — a job counts toward every stage it reached._"
+        )
+
+    # The rejection list is sized against the message without it, so naming rejections
+    # can shorten the Outstanding block below but never push the summary over the limit.
+    msg = _message(_rejection_block(rejections, budget=DISCORD_LIMIT - len(_message(""))))
 
     # Outstanding work, appended within whatever room Discord's 2000-character limit
     # leaves. Counts are cumulative above; this block is strictly "what is still on you".
