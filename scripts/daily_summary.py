@@ -68,15 +68,15 @@ DISCORD_LIMIT = 2000
 # Discord caps a message at 2000 characters, so this stays small.
 MAX_REVIEW_DETAIL = 4
 
-# Rejections named one per line before collapsing into a "+N more".
-MAX_REJECTION_DETAIL = 8
+# Offers and rejections named one per line before collapsing into a "+N more".
+MAX_OUTCOME_DETAIL = 8
 
 # Last Email Time is the email's own timestamp, not the moment check_gmail.py got to it.
 # A rejection that arrives at 8:57 and is processed at 9:05 is too late for the morning
 # summary and dated before the evening window opens, so it would be named by neither.
-# Opening the rejection window early closes that gap; the price is that a rejection
-# landing in the margin can be named twice, which beats never.
-REJECTION_WINDOW_MARGIN = timedelta(minutes=30)
+# Opening the window early closes that gap; the price is that an outcome landing in the
+# margin can be named twice, which beats never.
+OUTCOME_WINDOW_MARGIN = timedelta(minutes=30)
 
 
 def _parse_dt(value) -> datetime | None:
@@ -279,33 +279,37 @@ def _stage_block(progress: dict[str, dict], budget: int) -> str:
     return ""
 
 
-def _new_rejections(jobs, struck: set, start: datetime, end: datetime) -> list:
+def _new_outcomes(jobs, struck: set, start: datetime, end: datetime,
+                  status: str, event: str) -> list:
     """
-    Rows the Gmail checker turned Rejected inside the window, oldest first.
+    Rows the Gmail checker moved to `status` inside the window, oldest first.
 
-    The checker writes Status, Last Event and Last Email Time together when it applies a
-    rejection, so all three must agree. Status alone is not enough: a Rejected row whose
-    last mail was something else was touched in the window but not rejected in it. A
-    rejection typed into the sheet by hand carries no timestamp and cannot be dated.
+    The checker writes Status, Last Event and Last Email Time together when it applies
+    an outcome email, so all three must agree. Status alone is not enough: an Offer row
+    whose last mail was an interview invite was touched in the window but did not become
+    an offer in it. An outcome typed into the sheet by hand carries no timestamp and
+    cannot be dated, so it cannot be listed.
+
+    `event` is the classifier key behind the Last Event cell — "rejection" or "offer".
     """
-    opens = start - REJECTION_WINDOW_MARGIN
+    opens = start - OUTCOME_WINDOW_MARGIN
     found = []
     for job in jobs:
-        if job.row_number in struck or job.status != STATUS_REJECTED:
+        if job.row_number in struck or job.status != status:
             continue
-        if event_key(job.last_event) != "rejection":
+        if event_key(job.last_event) != event:
             continue
-        rejected_at = _parse_dt(job.last_email_time)
-        if rejected_at is not None and opens <= rejected_at <= end:
-            found.append((rejected_at, job))
+        decided_at = _parse_dt(job.last_email_time)
+        if decided_at is not None and opens <= decided_at <= end:
+            found.append((decided_at, job))
 
     found.sort(key=lambda pair: pair[0])
     return [job for _, job in found]
 
 
-def _rejection_block(rejections: list, budget: int) -> str:
+def _outcome_block(rows: list, budget: int) -> str:
     """
-    Render one line per new rejection, trimming to fit `budget` characters.
+    Render one line per row, trimming to fit `budget` characters.
 
     Same reason as _stage_block: Discord rejects an over-long message outright, so the
     list shortens into a "+N more" rather than costing the whole summary.
@@ -317,13 +321,13 @@ def _rejection_block(rejections: list, budget: int) -> str:
         return f"row {job.row_number} · {named}"
 
     def render(limit: int) -> str:
-        shown = rejections[:limit]
+        shown = rows[:limit]
         body = "".join(f"\n     • {label(job)}" for job in shown)
-        if len(rejections) > len(shown):
-            body += f"\n     • +{len(rejections) - len(shown)} more"
+        if len(rows) > len(shown):
+            body += f"\n     • +{len(rows) - len(shown)} more"
         return body
 
-    for limit in (MAX_REJECTION_DETAIL, 4, 2, 0):
+    for limit in (MAX_OUTCOME_DETAIL, 4, 2, 0):
         block = render(limit)
         if len(block) <= budget:
             return block
@@ -536,13 +540,25 @@ def main() -> None:
     totals = _season_totals(jobs, target_season)
     season_label = target_season or "All Time"
 
-    rejections = _new_rejections(jobs, struck_rows, start, end)
+    offers = _new_outcomes(jobs, struck_rows, start, end, STATUS_OFFER, "offer")
+    rejections = _new_outcomes(jobs, struck_rows, start, end, STATUS_REJECTED, "rejection")
+    logger.info(f"New offers in window: {[job.row_number for job in offers]}")
     logger.info(f"New rejections in window: {[job.row_number for job in rejections]}")
 
-    def _message(rejection_lines: str) -> str:
+    def _message(offer_lines: str, rejection_lines: str) -> str:
+        # An offer is rare and worth a headline of its own; a standing "New offers: 0"
+        # twice a day is neither news nor encouragement, and the cumulative figure is
+        # already in Season Totals. So this line appears only when there is one, unlike
+        # rejections, which are routine enough that a zero is worth stating.
+        offer_line = (
+            f"🎉 **NEW OFFER{'S' if len(offers) > 1 else ''}: "
+            f"{len(offers)}**{offer_lines}\n"
+            if offers else ""
+        )
         return (
             f"📊 **Pipeline Summary — {range_label}**\n"
             f"{divider}\n"
+            f"{offer_line}"
             f"🔎 Scanned:                **{scanned}**\n"
             f"🚫 Filtered out:           **{total_filtered}**{filter_lines}\n"
             f"🔍 Discovered:             **{discovered}**\n"
@@ -568,9 +584,14 @@ def main() -> None:
             f"_Cumulative — a job counts toward every stage it reached._"
         )
 
-    # The rejection list is sized against the message without it, so naming rejections
-    # can shorten the Outstanding block below but never push the summary over the limit.
-    msg = _message(_rejection_block(rejections, budget=DISCORD_LIMIT - len(_message(""))))
+    # Both lists are sized against the message without them, so naming outcomes can
+    # shorten the Outstanding block below but never push the summary over the limit.
+    # Offers are measured first and rejections take what is left: if room ever runs
+    # short, the thing worth reading is the offer.
+    room = DISCORD_LIMIT - len(_message("", ""))
+    offer_lines = _outcome_block(offers, budget=room)
+    rejection_lines = _outcome_block(rejections, budget=room - len(offer_lines))
+    msg = _message(offer_lines, rejection_lines)
 
     # Outstanding work, appended within whatever room Discord's 2000-character limit
     # leaves. Counts are cumulative above; this block is strictly "what is still on you".

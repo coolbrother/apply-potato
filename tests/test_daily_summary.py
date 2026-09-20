@@ -9,13 +9,13 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from scripts.daily_summary import (
-    MAX_REJECTION_DETAIL,
-    _new_rejections,
-    _rejection_block,
+    MAX_OUTCOME_DETAIL,
+    _new_outcomes,
+    _outcome_block,
     _season_matches,
     _season_totals,
 )
-from src.sheets import JobRow
+from src.sheets import STATUS_OFFER, STATUS_REJECTED, JobRow
 
 
 def make_job(row_number=2, status="New", season_year="Summer 2027",
@@ -158,7 +158,7 @@ def test_empty_sheet():
 
 
 # =============================================================================
-# New rejections
+# New outcomes — rejections and offers
 # =============================================================================
 
 # The evening window: 09:00 to 17:00 on the same day.
@@ -173,8 +173,22 @@ def rejected(row_number, when, **kwargs):
                     last_email_time=when, **kwargs)
 
 
+def offered(row_number, when, **kwargs):
+    """A row as the Gmail checker leaves it after applying an offer email."""
+    kwargs.setdefault("last_event", "Offer")
+    return make_job(row_number=row_number, status="Offer",
+                    last_email_time=when, **kwargs)
+
+
 def rejected_rows(jobs, struck=frozenset()):
-    found = _new_rejections(jobs, set(struck), WINDOW_START, WINDOW_END)
+    found = _new_outcomes(jobs, set(struck), WINDOW_START, WINDOW_END,
+                          STATUS_REJECTED, "rejection")
+    return [job.row_number for job in found]
+
+
+def offered_rows(jobs, struck=frozenset()):
+    found = _new_outcomes(jobs, set(struck), WINDOW_START, WINDOW_END,
+                          STATUS_OFFER, "offer")
     return [job.row_number for job in found]
 
 
@@ -223,32 +237,82 @@ def test_rejections_are_listed_oldest_first():
     assert rejected_rows(jobs) == [11, 10]
 
 
-def test_rejection_line_names_row_company_and_position():
+def test_outcome_line_names_row_company_and_position():
     jobs = [rejected(1873, "09/19/2026 11:00:00", company="Acme", position="SWE Intern")]
-    block = _rejection_block(jobs, budget=1000)
+    block = _outcome_block(jobs, budget=1000)
     assert block == "\n     • row 1873 · Acme — SWE Intern"
 
 
-def test_rejection_line_without_a_position():
+def test_outcome_line_without_a_position():
     jobs = [rejected(1873, "09/19/2026 11:00:00", company="Acme", position="")]
-    assert _rejection_block(jobs, budget=1000) == "\n     • row 1873 · Acme"
+    assert _outcome_block(jobs, budget=1000) == "\n     • row 1873 · Acme"
 
 
-def test_no_rejections_renders_nothing():
-    assert _rejection_block([], budget=1000) == ""
+def test_no_outcomes_renders_nothing():
+    assert _outcome_block([], budget=1000) == ""
 
 
-def test_rejection_list_is_capped():
-    jobs = [rejected(n, "09/19/2026 11:00:00") for n in range(MAX_REJECTION_DETAIL + 3)]
-    lines = _rejection_block(jobs, budget=5000).strip("\n").split("\n")
-    assert len(lines) == MAX_REJECTION_DETAIL + 1
+def test_outcome_list_is_capped():
+    jobs = [rejected(n, "09/19/2026 11:00:00") for n in range(MAX_OUTCOME_DETAIL + 3)]
+    lines = _outcome_block(jobs, budget=5000).strip("\n").split("\n")
+    assert len(lines) == MAX_OUTCOME_DETAIL + 1
     assert lines[-1].strip() == "• +3 more"
 
 
-def test_rejection_list_shrinks_to_fit_the_budget():
+def test_outcome_list_shrinks_to_fit_the_budget():
     jobs = [rejected(n, "09/19/2026 11:00:00") for n in range(6)]
-    full = _rejection_block(jobs, budget=5000)
-    tight = _rejection_block(jobs, budget=len(full) - 1)
+    full = _outcome_block(jobs, budget=5000)
+    tight = _outcome_block(jobs, budget=len(full) - 1)
     assert len(tight) < len(full)
     assert tight.endswith("• +2 more")    # fell back to four rows
-    assert _rejection_block(jobs, budget=20) == "\n     • +6 more"
+    assert _outcome_block(jobs, budget=20) == "\n     • +6 more"
+
+
+# --- Offers use the same rule, on their own status and event -----------------
+
+def test_offer_inside_window_is_listed():
+    jobs = [offered(10, "09/19/2026 11:30:00")]
+    assert offered_rows(jobs) == [10]
+
+
+def test_offer_outside_window_is_not_listed():
+    jobs = [
+        offered(10, "09/18/2026 16:00:00"),
+        offered(11, "09/19/2026 17:30:00"),
+        offered(12, ""),                       # typed by hand, never dated
+    ]
+    assert offered_rows(jobs) == []
+
+
+def test_only_rows_the_checker_made_offers_count():
+    jobs = [
+        # An Offer row whose latest mail was scheduling, not the offer itself.
+        offered(10, "09/19/2026 11:00:00", last_event="Phone Invite"),
+        # Offer event on a row that never reached Offer.
+        make_job(row_number=11, status="Technical", last_event="Offer",
+                 last_email_time="09/19/2026 11:00:00"),
+        offered(12, "09/19/2026 11:00:00"),
+    ]
+    assert offered_rows(jobs) == [12]
+
+
+def test_offers_and_rejections_do_not_bleed_into_each_other():
+    jobs = [
+        offered(10, "09/19/2026 11:00:00"),
+        rejected(11, "09/19/2026 12:00:00"),
+    ]
+    assert offered_rows(jobs) == [10]
+    assert rejected_rows(jobs) == [11]
+
+
+def test_struck_offer_rows_are_skipped():
+    jobs = [offered(10, "09/19/2026 11:00:00"), offered(11, "09/19/2026 12:00:00")]
+    assert offered_rows(jobs, struck={10}) == [11]
+
+
+def test_offer_window_opens_early_too():
+    jobs = [
+        offered(10, "09/19/2026 08:45:00"),   # inside the 30-minute margin
+        offered(11, "09/19/2026 08:15:00"),   # before it
+    ]
+    assert offered_rows(jobs) == [10]
