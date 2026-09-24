@@ -587,7 +587,8 @@ class GmailChecker:
         # confirmation from another — and whichever lands second wins on timestamp alone.
         # Letting a confirmation reset a row already at OA loses real progress, so the
         # status is held and everything else about the email is still recorded.
-        if self._is_status_regression(job.status, new_status):
+        held = self._is_status_regression(job.status, new_status)
+        if held:
             logger.info(
                 f"Row {job.row_number} ({job.company}) is already {job.status}; "
                 f"keeping it rather than moving back to {new_status}"
@@ -605,7 +606,14 @@ class GmailChecker:
         # not that a newer one has since been sent, which is the gap this closes — an
         # "OA Invite" here on a row already carrying "OA" in W means one is done and
         # another is waiting.
-        updates["last_event"] = event_label(classification.category)
+        #
+        # A held email from an earlier stage leaves it alone, for the same reason the
+        # status is held: a confirmation landing a second after the OA invite would
+        # otherwise replace "OA Invite" with "Application Received" and hide the work
+        # that is owed. Ramp's invite and ATS receipt arrived in the same second. A held
+        # email at the row's own stage still writes — that is the second invite above.
+        if not held or new_status == (job.status or "").strip():
+            updates["last_event"] = event_label(classification.category)
 
         # Update relevant date column. The two paths differ: application_date is
         # single-valued and must come from the confirmation's arrival time — never from

@@ -317,6 +317,68 @@ class TestStaleGuard:
         assert _cell(sheets, row, "last_email_time") == "08/02/2026 19:54:06"
         assert checker.stats["status_regression_blocked"] == 1
 
+    def test_held_confirmation_keeps_the_oa_invite_event(self, checker_config):
+        """
+        Holding the status was not enough: the confirmation still overwrote Last Event,
+        so a row owing an assessment read "Application Received". Ramp's invite and ATS
+        receipt arrived in the same second, the receipt processed second.
+        """
+        sheets = MockSheetsClient()
+        row = _seed_job(sheets)
+        checker = _checker(checker_config, sheets)
+
+        checker._update_job_status(
+            sheets.get_all_jobs()[0],
+            _classification("oa"),
+            _email(datetime(2026, 9, 23, 22, 47, 40), message_id="invite"),
+        )
+        checker._update_job_status(
+            sheets.get_all_jobs()[0],
+            _classification("confirmation"),
+            _email(datetime(2026, 9, 23, 22, 47, 41), message_id="ats-confirmation"),
+        )
+
+        assert _cell(sheets, row, "status") == "OA"
+        assert _cell(sheets, row, "last_event") == "OA Invite"
+        assert _cell(sheets, row, "last_email_time") == "09/23/2026 22:47:41"
+
+    @pytest.mark.parametrize("status,event", [
+        ("OA", "Assessment Submitted"),
+        ("Rejected", "Rejected"),
+    ])
+    def test_late_confirmation_keeps_a_later_event(self, checker_config, status, event):
+        sheets = MockSheetsClient()
+        row = _seed_job(sheets)
+        sheets.update_job(row, {"status": status, "last_event": event})
+        checker = _checker(checker_config, sheets)
+
+        checker._update_job_status(
+            sheets.get_all_jobs()[0],
+            _classification("confirmation"),
+            _email(datetime(2026, 9, 23, 22, 47, 41)),
+        )
+
+        assert _cell(sheets, row, "status") == status
+        assert _cell(sheets, row, "last_event") == event
+
+    def test_second_invite_at_the_same_stage_still_writes_its_event(self, checker_config):
+        """A new OA invite after one was submitted is how a second assessment shows as owed."""
+        sheets = MockSheetsClient()
+        row = _seed_job(sheets)
+        sheets.update_job(row, {
+            "status": "OA", "completed_stages": "OA", "last_event": "Assessment Submitted",
+        })
+        checker = _checker(checker_config, sheets)
+
+        checker._update_job_status(
+            sheets.get_all_jobs()[0],
+            _classification("oa"),
+            _email(datetime(2026, 9, 23, 22, 47, 41)),
+        )
+
+        assert _cell(sheets, row, "status") == "OA"
+        assert _cell(sheets, row, "last_event") == "OA Invite"
+
     def test_held_status_keeps_its_own_colour(self, checker_config):
         """Recolouring to a stage the row is not at is its own kind of wrong answer."""
         sheets = MagicMock()
