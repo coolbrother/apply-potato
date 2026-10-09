@@ -104,7 +104,7 @@ def main() -> int:
     before = job.completed_stages or ""
     after = add_stage(before, stage)
     event_before = job.last_event or ""
-    event_after = event_label("stage_done")
+    event_after = event_label("stage_done", stage)
 
     print(f"Row {args.row}: {job.company} - {job.position}")
     print(f"  status           : {job.status}")

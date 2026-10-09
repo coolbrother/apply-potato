@@ -624,7 +624,9 @@ class GmailChecker:
         # that is owed. Ramp's invite and ATS receipt arrived in the same second. A held
         # email at the row's own stage still writes — that is the second invite above.
         if not held or new_status == (job.status or "").strip():
-            updates["last_event"] = event_label(classification.category)
+            updates["last_event"] = event_label(
+                classification.category, classification.stage_completed
+            )
 
         # Update relevant date column. The two paths differ: application_date is
         # single-valued and must come from the confirmation's arrival time — never from
@@ -772,7 +774,7 @@ class GmailChecker:
 
         job = at_stage[0]
         updated = add_stage(job.completed_stages, stage)
-        event = event_label(classification.category)
+        event = event_label(classification.category, stage)
         arrived = self._local_naive(email.date)
         recorded = parse_sheet_datetime(job.last_email_time)
 

@@ -72,6 +72,20 @@ class TestSchema:
         for key in ("oa", "phone", "technical", "stage_done", "rejection", "offer"):
             assert event_key(event_label(key)) == key
 
+    def test_a_finished_stage_is_named_for_its_stage(self):
+        """A completed technical interview must not read as a submitted assessment."""
+        assert event_label("stage_done", "OA") == "Assessment Submitted"
+        assert event_label("stage_done", "Phone") == "Phone Completed"
+        assert event_label("stage_done", "Technical") == "Technical Completed"
+        assert event_label("stage_done") == "Assessment Submitted"
+
+    def test_every_finished_label_reads_back_as_stage_done(self):
+        for stage in ("OA", "Phone", "Technical"):
+            assert event_key(event_label("stage_done", stage)) == "stage_done"
+
+    def test_stage_is_ignored_for_other_categories(self):
+        assert event_label("technical", "Technical") == "Technical Invite"
+
     def test_earlier_spellings_still_resolve(self):
         """Rows written before the rename must not silently stop matching."""
         assert event_key("oa") == "oa"

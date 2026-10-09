@@ -283,6 +283,13 @@ EVENT_LABELS = {
     "rejection": "Rejected",
 }
 
+# A finished stage is labelled for the stage, so a completed technical interview does
+# not read as a submitted assessment. OA keeps the general "Assessment Submitted".
+STAGE_DONE_LABELS = {
+    "Phone": "Phone Completed",
+    "Technical": "Technical Completed",
+}
+
 # Recovering the key from the label. Includes the spellings this column used earlier
 # today, so rows written before the rename still resolve rather than silently ceasing to
 # match.
@@ -292,11 +299,18 @@ _EVENT_KEYS.update({
     "stage done": "stage_done", "stage_done": "stage_done",
     "confirmation": "confirmation", "rejection": "rejection",
 })
+_EVENT_KEYS.update({label.lower(): "stage_done" for label in STAGE_DONE_LABELS.values()})
 
 
-def event_label(category: str) -> str:
-    """The sheet-facing spelling of a classifier category."""
+def event_label(category: str, stage: Optional[str] = None) -> str:
+    """
+    The sheet-facing spelling of a classifier category.
+
+    `stage` only matters for "stage_done", where it names which stage was finished.
+    """
     key = (category or "").strip().lower()
+    if key == "stage_done" and stage in STAGE_DONE_LABELS:
+        return STAGE_DONE_LABELS[stage]
     return EVENT_LABELS.get(key, key.replace("_", " ").title())
 
 
