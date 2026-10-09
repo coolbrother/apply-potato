@@ -56,7 +56,7 @@ from src.sheets import (
     split_date_cell,
     split_stages,
     STATUS_APPLIED, STATUS_GHOSTED, STATUS_NEW, STATUS_OA, STATUS_OFFER,
-    STATUS_PHONE, STATUS_REJECTED, STATUS_TECHNICAL,
+    STATUS_PHONE, STATUS_REJECTED, STATUS_TECHNICAL, STATUS_WITHDRAWN,
 )
 
 # Discord rejects a webhook message whose content exceeds this outright, so the
@@ -103,11 +103,11 @@ def _stem(row_num: int, company: str) -> str:
 # cell was never filled in (e.g. status advanced by the Gmail classifier).
 POST_APPLY_STATUSES = {
     STATUS_APPLIED, STATUS_OA, STATUS_PHONE, STATUS_TECHNICAL,
-    STATUS_OFFER, STATUS_REJECTED, STATUS_GHOSTED,
+    STATUS_OFFER, STATUS_REJECTED, STATUS_GHOSTED, STATUS_WITHDRAWN,
 }
 
 # Statuses where the pipeline has stopped moving for that job.
-CLOSED_STATUSES = {STATUS_OFFER, STATUS_REJECTED, STATUS_GHOSTED}
+CLOSED_STATUSES = {STATUS_OFFER, STATUS_REJECTED, STATUS_GHOSTED, STATUS_WITHDRAWN}
 
 
 def _has_value(cell) -> bool:
@@ -150,7 +150,7 @@ def _season_totals(jobs, target_season_year: str | None) -> dict[str, int]:
     """
     totals = {
         "in_season": 0, "applied": 0, "oa": 0, "phone": 0, "technical": 0,
-        "offer": 0, "rejected": 0, "ghosted": 0, "awaiting": 0,
+        "offer": 0, "rejected": 0, "ghosted": 0, "withdrawn": 0, "awaiting": 0,
     }
 
     for job in jobs:
@@ -174,6 +174,8 @@ def _season_totals(jobs, target_season_year: str | None) -> dict[str, int]:
             totals["rejected"] += 1
         elif job.status == STATUS_GHOSTED:
             totals["ghosted"] += 1
+        elif job.status == STATUS_WITHDRAWN:
+            totals["withdrawn"] += 1
 
     return totals
 
@@ -187,15 +189,18 @@ def _stage_progress(jobs, struck: set, target_season_year: str | None) -> dict[s
     """
     Per stage: what is outstanding, how many are completed, and how many there are.
 
-    Three counts, from three different sources, because no one column answers all of it:
+    Four counts, from different sources, because no one column answers all of it:
 
       total      every row that reached the stage this season. Deliberately the same
                  rule _season_totals uses, so this figure equals the stage's line in
                  Season Totals rather than quietly disagreeing with it.
       todo       rows sitting at the stage with work still owed.
-      completed  the rest — total minus todo.
+      withdrawn  Withdrawn rows whose furthest stage is this one — the stage the user
+                 walked away from (see _withdrawn_at). Earlier stages were passed, so
+                 they stay completed.
+      completed  the rest — total minus todo minus withdrawn.
 
-    The two parts partition the total, so the figures always sum. Row 308 finished one
+    The parts partition the total, so the figures always sum. Row 308 finished one
     Chicago assessment and was sent a second: it counts as outstanding, not completed,
     because something is still owed there. Counting it in both would read 3/7/9 against a
     total of 9, which invites exactly the doubt the three numbers exist to remove.
@@ -209,38 +214,74 @@ def _stage_progress(jobs, struck: set, target_season_year: str | None) -> dict[s
     means new work, a receipt means none.
     """
     progress = {
-        stage: {"todo": [], "completed": 0, "total": 0} for stage in COMPLETABLE_STAGES
+        stage: {"todo": [], "withdrawn": 0, "completed": 0, "total": 0}
+        for stage in COMPLETABLE_STAGES
     }
 
-    for job in jobs:
-        if not (job.company or "").strip() or job.row_number in struck:
-            continue
-        if not _season_matches(target_season_year, job.season_year):
-            continue
-
-        recorded = split_stages(job.completed_stages)
+    for job in _season_rows(jobs, struck, target_season_year):
         for stage in COMPLETABLE_STAGES:
             if reached_stage(job, stage):
                 progress[stage]["total"] += 1
 
-        # Only a row still sitting at a stage can owe work there.
-        if job.status not in progress:
+        if job.status == STATUS_WITHDRAWN:
+            stage = _withdrawn_at(job)
+            if stage in progress:
+                progress[stage]["withdrawn"] += 1
             continue
-        invited_to = INVITATION_CATEGORIES.get(event_key(job.last_event))
-        if invited_to == job.status:
-            outstanding = True
-        else:
-            # No invitation outstanding, so fall back to the record. This covers rows
-            # predating the category column and rows whose last mail was something else.
-            outstanding = job.status not in recorded
-        if outstanding:
+
+        # Only a row still sitting at a stage can owe work there.
+        recorded = split_stages(job.completed_stages)
+        if job.status in progress and _owes_work(job, job.status, recorded):
             progress[job.status]["todo"].append(job)
 
-    # Derived rather than counted, so the two parts cannot fail to partition the total.
+    # Derived rather than counted, so the parts cannot fail to partition the total.
     for stage in COMPLETABLE_STAGES:
-        progress[stage]["completed"] = progress[stage]["total"] - len(progress[stage]["todo"])
+        p = progress[stage]
+        p["completed"] = p["total"] - len(p["todo"]) - p["withdrawn"]
 
     return progress
+
+
+def _season_rows(jobs, struck: set, target_season_year: str | None):
+    """Named, un-struck rows in the target season — what every block below reads."""
+    for job in jobs:
+        if not (job.company or "").strip() or job.row_number in struck:
+            continue
+        if _season_matches(target_season_year, job.season_year):
+            yield job
+
+
+def _withdrawn_at(job) -> str:
+    """
+    The stage the user withdrew from: the furthest one the row reached.
+
+    Withdrawing ends the process wherever it stood, so the earlier stages were passed.
+    A row that never reached an assessment or interview was withdrawn as an application.
+    """
+    reached = [stage for stage in COMPLETABLE_STAGES if reached_stage(job, stage)]
+    return reached[-1] if reached else STATUS_APPLIED
+
+
+def _withdrawals(jobs, struck: set, target_season_year: str | None) -> list:
+    """Every withdrawn row this season, with its stage, in pipeline order then row."""
+    order = (STATUS_APPLIED,) + COMPLETABLE_STAGES
+    found = [
+        (job, _withdrawn_at(job))
+        for job in _season_rows(jobs, struck, target_season_year)
+        if job.status == STATUS_WITHDRAWN
+    ]
+    found.sort(key=lambda pair: (order.index(pair[1]), pair[0].row_number))
+    return found
+
+
+def _owes_work(job, stage: str, recorded: list) -> bool:
+    """Whether this row has work outstanding at `stage`."""
+    invited_to = INVITATION_CATEGORIES.get(event_key(job.last_event))
+    if invited_to == stage:
+        return True
+    # No invitation outstanding, so fall back to the record. This covers rows predating
+    # the category column and rows whose last mail was something else.
+    return stage not in recorded
 
 
 def _stage_block(progress: dict[str, dict], budget: int) -> str:
@@ -258,10 +299,10 @@ def _stage_block(progress: dict[str, dict], budget: int) -> str:
             completed, total = progress[stage]["completed"], progress[stage]["total"]
             if not total:
                 continue
-            # outstanding / completed / total. The last figure matches this stage's line
-            # in Season Totals; the three need not sum, since a row that finished one
-            # assessment and was sent another is both completed and outstanding.
-            lines.append(f"**{stage} ({len(todo)}/{completed}/{total})**")
+            # outstanding / completed / withdrawn / total. The last figure matches this
+            # stage's line in Season Totals, and the first three sum to it.
+            withdrawn = progress[stage]["withdrawn"]
+            lines.append(f"**{stage} ({len(todo)}/{completed}/{withdrawn}/{total})**")
             if not todo:
                 continue
             shown = todo if limit is None else todo[:limit]
@@ -276,6 +317,25 @@ def _stage_block(progress: dict[str, dict], budget: int) -> str:
         block = render(with_position, limit)
         if len(block) <= budget:
             return block
+    return ""
+
+
+def _withdrawn_block(withdrawals: list, budget: int) -> str:
+    """
+    One line per withdrawn row — company, row, and the stage it was withdrawn at.
+
+    Trimmed the same way as _stage_block, into an "…and N more" rather than costing the
+    whole summary its place under Discord's limit.
+    """
+    lines = [f"  • {job.company}, row {job.row_number} ({stage})"
+             for job, stage in withdrawals]
+    for shown in range(len(lines), -1, -1):
+        block = lines[:shown]
+        if shown < len(lines):
+            block.append(f"  • …and {len(lines) - shown} more")
+        text = "\n".join(block)
+        if len(text) <= budget:
+            return text
     return ""
 
 
@@ -580,6 +640,7 @@ def main() -> None:
             f"🎉 Offer:                   **{totals['offer']}**\n"
             f"❌ Rejected:                **{totals['rejected']}**\n"
             f"👻 Ghosted:                 **{totals['ghosted']}**\n"
+            f"🚪 Withdrawn:               **{totals['withdrawn']}**\n"
             f"⏳ Awaiting response:      **{totals['awaiting']}**\n"
             f"_Cumulative — a job counts toward every stage it reached._"
         )
@@ -599,6 +660,15 @@ def main() -> None:
                                budget=DISCORD_LIMIT - len(msg) - 80)
     if stage_block:
         msg += f"\n\n📌 **Outstanding**\n{divider}\n{stage_block}"
+
+    # Withdrawals last: nothing is owed on them, so they get whatever room is left.
+    withdrawn_header = f"\n\n🚪 **Withdrawn**\n{divider}\n"
+    withdrawn_block = _withdrawn_block(
+        _withdrawals(jobs, struck_rows, target_season),
+        budget=DISCORD_LIMIT - len(msg) - len(withdrawn_header),
+    )
+    if withdrawn_block:
+        msg += withdrawn_header + withdrawn_block
 
     if args.dry_run:
         print(msg)

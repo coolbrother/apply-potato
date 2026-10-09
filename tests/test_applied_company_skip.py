@@ -30,7 +30,9 @@ def row(row_number=1, company="Acme", position="Intern", status="", application_
 class TestHasLiveApplication:
     """The predicate: applied, and not yet finished."""
 
-    @pytest.mark.parametrize("status", ["Applied", "OA", "Phone", "Technical", "Offer"])
+    @pytest.mark.parametrize(
+        "status", ["Applied", "OA", "Phone", "Technical", "Offer", "Withdrawn"]
+    )
     def test_live_statuses(self, status):
         assert has_live_application(row(status=status))
 
@@ -80,6 +82,11 @@ class TestCompanyHasLiveApplication:
     def test_rejected_company_reopens(self):
         c = self._checker([row(1, "Acme", status="Rejected")])
         assert c.company_has_live_application("Acme") is None
+
+    def test_withdrawn_company_stays_closed(self):
+        """The user walked away; a new posting there is noise, not a reopened seat."""
+        c = self._checker([row(1, "Acme", status="Withdrawn")])
+        assert c.company_has_live_application("Acme") == "Acme"
 
     def test_one_live_application_among_several_rejections_still_blocks(self):
         c = self._checker([

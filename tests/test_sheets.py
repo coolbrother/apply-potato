@@ -431,7 +431,7 @@ class TestEmailTimestampLocalization:
 STATUS_COLOR_KEYS = [
     "STATUS_COLOR_NEW", "STATUS_COLOR_APPLIED", "STATUS_COLOR_OA",
     "STATUS_COLOR_PHONE", "STATUS_COLOR_TECHNICAL", "STATUS_COLOR_OFFER",
-    "STATUS_COLOR_REJECTED",
+    "STATUS_COLOR_REJECTED", "STATUS_COLOR_WITHDRAWN",
 ]
 
 
@@ -457,6 +457,10 @@ class TestStatusColorConfig:
         """Only "New" gets a fallback; an unset status stays absent so the row is
         left alone rather than repainted."""
         assert "OA" not in _parse_status_colors()
+
+    def test_withdrawn_reads_its_own_key(self, no_status_color_env, monkeypatch):
+        monkeypatch.setenv("STATUS_COLOR_WITHDRAWN", "#B0BEC5")
+        assert _parse_status_colors()["Withdrawn"] == "#B0BEC5"
 
 
 class TestAppendedRowColor:

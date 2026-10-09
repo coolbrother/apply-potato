@@ -60,6 +60,7 @@ from src.sheets import (
     STATUS_PHONE,
     STATUS_REJECTED,
     STATUS_TECHNICAL,
+    STATUS_WITHDRAWN,
 )
 from src.notifications import is_dream_company, notify_status_change
 from src.email_archive import save_status_email
@@ -96,6 +97,10 @@ STATUS_RANK = {
 # Outcomes that end the process. They can arrive at any stage — a rejection after a
 # final round is still a rejection — so they are never treated as a regression.
 TERMINAL_STATUSES = {STATUS_REJECTED, STATUS_GHOSTED}
+
+# Outcomes the user decided, which no email may overwrite — not even a terminal one. A
+# "sorry to see you go" rejection after a withdrawal is mail about the user's own choice.
+FINAL_STATUSES = {STATUS_WITHDRAWN}
 
 # Mapping of email categories to date columns. "confirmation" is handled separately
 # in _update_job_status: application_date is single-valued and comes from the email's
@@ -481,9 +486,15 @@ class GmailChecker:
         moved row 317 from Rejected back to OA. A row that has ended stays ended until a
         person says otherwise.
 
+        Final statuses (Withdrawn) are checked before that exemption: the user ended the
+        process, so even a rejection is held. The rest of the email is still recorded.
+
         An unrecognised status on either side returns False, so an unknown value is never
         silently swallowed.
         """
+        if (current or "").strip() in FINAL_STATUSES:
+            return True
+
         if new_status in TERMINAL_STATUSES:
             return False
 

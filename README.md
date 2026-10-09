@@ -401,3 +401,4 @@ Jobs progress through these statuses:
 | Offer | Offer received | Gmail offer letter |
 | Rejected | Application rejected | Gmail rejection |
 | Ghosted | No response (manual) | User sets manually |
+| Withdrawn | You withdrew or declined; no email can change it | User sets manually |

@@ -201,6 +201,7 @@ def notify_status_change(company: str, position: str, new_status: str, url: str 
         "Technical": "🔧",
         "Offer": "🎉",
         "Rejected": "❌",
+        "Withdrawn": "🚪",
     }
     emoji = emoji_map.get(new_status, "📋")
 

@@ -315,7 +315,7 @@ def _parse_status_colors() -> Dict[str, str]:
     # Status names must match the values used in sheets.py
     # "Info" is not a status. It is the row color used to flag an applied job that
     # received mail nobody could categorize, so it rides the same STATUS_COLOR_* plumbing.
-    status_names = ["New", "Applied", "OA", "Phone", "Technical", "Offer", "Rejected", "Info"]
+    status_names = ["New", "Applied", "OA", "Phone", "Technical", "Offer", "Rejected", "Withdrawn", "Info"]
 
     # A new row inherits the formatting of the row above it when appended, so "New"
     # needs a color of its own — without one, the status color of whatever row came

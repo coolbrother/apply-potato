@@ -407,6 +407,9 @@ def has_live_application(job) -> bool:
     the asymmetry with `shows_application`, which counts *any* status past New: there a
     rejection is still evidence the user applied, which is exactly what that tie-break
     needs. Here it is evidence they are finished.
+
+    Withdrawn is left out on purpose and so counts as live: the user walked away from
+    that company, and a new posting there is noise, not a reopened seat.
     """
     if not shows_application(job):
         return False
@@ -559,6 +562,9 @@ STATUS_TECHNICAL = "Technical"
 STATUS_OFFER = "Offer"
 STATUS_REJECTED = "Rejected"
 STATUS_GHOSTED = "Ghosted"
+# Set by hand when the user ends the process themselves — declining an interview after
+# accepting an offer elsewhere. Unlike Rejected and Ghosted, no email may change it.
+STATUS_WITHDRAWN = "Withdrawn"
 
 
 @dataclass

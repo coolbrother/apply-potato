@@ -131,11 +131,13 @@ def test_terminal_status_counts():
         make_job(status="Rejected", application_date="6/1/2026"),
         make_job(status="Rejected", application_date="6/2/2026"),
         make_job(status="Ghosted", application_date="6/3/2026"),
+        make_job(status="Withdrawn", application_date="6/4/2026"),
     ]
     totals = _season_totals(jobs, "Summer 2027")
     assert totals["offer"] == 1
     assert totals["rejected"] == 2
     assert totals["ghosted"] == 1
+    assert totals["withdrawn"] == 1
 
 
 def test_awaiting_excludes_closed_and_unapplied():
@@ -145,11 +147,12 @@ def test_awaiting_excludes_closed_and_unapplied():
         make_job(status="Rejected", application_date="6/1/2026"),  # closed
         make_job(status="Offer", application_date="6/1/2026"),     # closed
         make_job(status="Ghosted", application_date="6/1/2026"),   # closed
+        make_job(status="Withdrawn"),                              # closed, still applied
         make_job(status="New"),                                    # never applied
     ]
     totals = _season_totals(jobs, "Summer 2027")
     assert totals["awaiting"] == 2
-    assert totals["applied"] == 5
+    assert totals["applied"] == 6
 
 
 def test_empty_sheet():

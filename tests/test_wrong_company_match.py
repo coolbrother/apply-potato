@@ -14,6 +14,8 @@ Usage:
 
 from types import SimpleNamespace
 
+import pytest
+
 from src.email_classifier import drop_hostname_candidates
 from src.sheets import (
     STATUS_APPLIED,
@@ -21,6 +23,7 @@ from src.sheets import (
     STATUS_OA,
     STATUS_OFFER,
     STATUS_REJECTED,
+    STATUS_WITHDRAWN,
     as_acronym,
     company_acronyms,
     company_matches,
@@ -306,7 +309,17 @@ class TestTerminalStatusFloor:
         assert not is_regression_call(STATUS_APPLIED, STATUS_OA)
 
     def test_unknown_current_status_still_falls_through(self):
-        assert not is_regression_call("Withdrawn", STATUS_OA)
+        assert not is_regression_call("On Hold", STATUS_OA)
+
+    @pytest.mark.parametrize("new", [
+        STATUS_APPLIED, STATUS_OA, STATUS_OFFER, STATUS_REJECTED, STATUS_GHOSTED,
+    ])
+    def test_withdrawn_row_refuses_everything(self, new):
+        """The user ended it; even a later rejection does not replace that."""
+        assert is_regression_call(STATUS_WITHDRAWN, new)
+
+    def test_whitespace_around_withdrawn(self):
+        assert is_regression_call("  Withdrawn ", STATUS_REJECTED)
 
     def test_blank_current_status_still_falls_through(self):
         assert not is_regression_call("", STATUS_OA)

@@ -259,11 +259,113 @@ class TestOutstanding:
         progress = _stage_progress(jobs, struck=set(), target_season_year=None)
         assert progress["OA"]["total"] == 3
 
+    def _withdrawn(self, row, completed="", category="", **dates):
+        fields = {"oa_date": "", "phone_date": "", "tech_date": ""}
+        fields.update(dates)
+        return SimpleNamespace(row_number=row, company="Acme", position="Intern",
+                               status="Withdrawn", completed_stages=completed,
+                               last_event=category, season_year="Summer 2027", **fields)
+
+    def test_withdrawn_at_an_owed_stage_counts_separately(self):
+        """Invited to an OA, then withdrew: neither outstanding nor completed."""
+        job = self._withdrawn(1, category="oa", oa_date="9/30/2026")
+        oa = _stage_progress([job], struck=set(), target_season_year=None)["OA"]
+        assert oa["todo"] == []
+        assert oa["withdrawn"] == 1
+        assert oa["completed"] == 0
+        assert oa["total"] == 1
+
+    def test_earlier_stages_of_a_withdrawn_row_stay_completed(self):
+        """Withdrew at the technical round: the OA and phone screen were passed."""
+        job = self._withdrawn(704, completed="OA", category="technical",
+                              oa_date="9/7/2026", phone_date="9/14/2026",
+                              tech_date="9/21/2026")
+        progress = _stage_progress([job], struck=set(), target_season_year=None)
+        assert progress["OA"]["completed"] == 1
+        assert progress["Phone"]["completed"] == 1
+        assert progress["Technical"]["withdrawn"] == 1
+        assert progress["Technical"]["completed"] == 0
+
+    def test_the_furthest_stage_is_withdrawn_even_if_submitted(self):
+        """The withdrawal section lists this row at OA, so the OA count must agree."""
+        job = self._withdrawn(1, completed="OA", category="stage_done",
+                              oa_date="9/30/2026")
+        oa = _stage_progress([job], struck=set(), target_season_year=None)["OA"]
+        assert oa["withdrawn"] == 1
+        assert oa["completed"] == 0
+
+    def test_withdrawn_rows_keep_the_partition(self):
+        jobs = [
+            self._withdrawn(1, category="oa", oa_date="9/30/2026"),
+            self._job(2, completed="", category="oa"),
+            self._job(3, completed="OA", category="stage_done"),
+        ]
+        oa = _stage_progress(jobs, struck=set(), target_season_year=None)["OA"]
+        assert len(oa["todo"]) + oa["completed"] + oa["withdrawn"] == oa["total"] == 3
+
+    def test_the_stage_line_reads_todo_completed_withdrawn_total(self):
+        render = _load_daily_summary()._stage_block
+        jobs = [self._withdrawn(1, category="oa", oa_date="9/30/2026"),
+                self._job(2, completed="OA", category="stage_done"),
+                self._job(3, completed="", category="oa")]
+        block = render(_stage_progress(jobs, set(), None), budget=2000)
+        assert "**OA (1/1/1/3)**" in block
+        # The withdrawn row is not listed as work owed.
+        assert "row 1" not in block
+        assert "row 3" in block
+
     def test_other_seasons_are_excluded(self):
         job = self._job(1, status="OA")
         job.season_year = "Summer 2026"
         progress = _stage_progress([job], struck=set(), target_season_year="Summer 2027")
         assert progress["OA"]["total"] == 0
+
+
+class TestWithdrawnSection:
+    """Its own section: company, row, and the stage the user withdrew at."""
+
+    summary = _load_daily_summary()
+
+    def _job(self, row, status="Withdrawn", **dates):
+        fields = {"oa_date": "", "phone_date": "", "tech_date": ""}
+        fields.update(dates)
+        return SimpleNamespace(row_number=row, company=f"Co{row}", position="Intern",
+                               status=status, completed_stages="", last_event="",
+                               season_year="Summer 2027", **fields)
+
+    def test_lists_each_withdrawal_at_its_furthest_stage(self):
+        jobs = [
+            self._job(704, oa_date="9/7/2026", phone_date="9/14/2026",
+                      tech_date="9/21/2026"),
+            self._job(1708, oa_date="9/21/2026"),
+            self._job(743, phone_date="9/28/2026"),
+            self._job(5),                                   # never got past applying
+            self._job(9, status="OA", oa_date="9/1/2026"),  # not withdrawn
+        ]
+        found = self.summary._withdrawals(jobs, struck=set(), target_season_year=None)
+        assert [(j.row_number, stage) for j, stage in found] == [
+            (5, "Applied"), (1708, "OA"), (743, "Phone"), (704, "Technical"),
+        ]
+
+    def test_struck_and_other_season_rows_are_left_out(self):
+        other = self._job(2, oa_date="9/1/2026")
+        other.season_year = "Summer 2026"
+        jobs = [self._job(1, oa_date="9/1/2026"), other]
+        assert self.summary._withdrawals(jobs, {1}, "Summer 2027") == []
+
+    def test_renders_company_row_and_stage(self):
+        found = [(self._job(1708), "OA")]
+        assert self.summary._withdrawn_block(found, budget=2000) == \
+            "  • Co1708, row 1708 (OA)"
+
+    def test_trims_to_the_budget(self):
+        found = [(self._job(n), "OA") for n in range(1, 30)]
+        block = self.summary._withdrawn_block(found, budget=200)
+        assert len(block) <= 200
+        assert block.endswith("more")
+
+    def test_nothing_withdrawn_renders_nothing(self):
+        assert self.summary._withdrawn_block([], budget=2000) == ""
 
 
 class TestClassification:
