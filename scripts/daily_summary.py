@@ -20,6 +20,8 @@ Windowed metrics (by timestamp stored in the Sheet / filled_forms.json):
   - Jobs applied in window (application_date within window)
   - New rejections in window, each named by row, company and position
   - Status emails needing review (needs_review.json), grouped by reason
+  - Jev second opinion (jev_shadow.json): emails where Jev disagreed with the LLM or
+    saw a likely status in one the LLM called unknown; omitted when there are none
 Running totals (NOT windowed):
   - Total pending (status == New)
   - Season funnel: cumulative count of jobs that have reached each stage this
@@ -40,6 +42,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import httpx
 
 from src.config import get_config
+from src.jev_log import load_entries as load_jev_entries, summary_entries, summary_line
 from src.logging_config import setup_logging, get_logger
 from src.needs_review import (
     REASON_DUPLICATE_ROWS,
@@ -70,6 +73,10 @@ MAX_REVIEW_DETAIL = 4
 
 # Offers and rejections named one per line before collapsing into a "+N more".
 MAX_OUTCOME_DETAIL = 8
+
+# Jev-flagged emails named before collapsing into a "+N more". The backtest month
+# averaged about one per summary, so this is headroom for a busy day.
+MAX_JEV_DETAIL = 4
 
 # Last Email Time is the email's own timestamp, not the moment check_gmail.py got to it.
 # A rejection that arrives at 8:57 and is processed at 9:05 is too late for the morning
@@ -394,6 +401,22 @@ def _outcome_block(rows: list, budget: int) -> str:
     return ""
 
 
+def _jev_block(entries: list) -> str:
+    """
+    The "Jev second opinion" line and its detail, or "" when nothing was flagged.
+
+    An empty section is left out entirely rather than shown as a zero: the LLM still
+    decides everything, so a quiet window has nothing to say.
+    """
+    if not entries:
+        return ""
+    shown = entries[:MAX_JEV_DETAIL]
+    body = "".join(f"\n          • {summary_line(e)}" for e in shown)
+    if len(entries) > len(shown):
+        body += f"\n          • +{len(entries) - len(shown)} more"
+    return f"🤖 Jev second opinion:     **{len(entries)}**{body}\n"
+
+
 def _resolve_window(window: str | None, now: datetime) -> tuple[str, datetime, datetime]:
     """Return (window_name, start, end) for the summary.
 
@@ -527,6 +550,11 @@ def main() -> None:
 
     total_review = sum(review_counts.values())
 
+    # Emails Jev flagged in review mode. Read from the file whatever JEV_MODE is now, so
+    # turning shadow off does not hide flags recorded earlier in the window.
+    jev_lines = _jev_block(summary_entries(
+        load_jev_entries(Path(__file__).parent.parent / "data"), start, end))
+
     # %-d / %-I are not supported on Windows; build the label manually.
     def _fmt(dt: datetime) -> str:
         hour12 = dt.hour % 12 or 12
@@ -628,6 +656,7 @@ def main() -> None:
             f"✅ Applied:                 **{applied}**\n"
             f"❌ New rejections:          **{len(rejections)}**{rejection_lines}\n"
             f"⚠️ Needs review:           **{total_review}**{review_lines}\n"
+            f"{jev_lines}"
             f"{divider}\n"
             f"📥 Total pending (New):    **{new_total}**\n"
             f"\n"

@@ -28,11 +28,13 @@ from typing import List, Optional
 
 from apscheduler.schedulers.blocking import BlockingScheduler
 
-from src.config import get_config, Config
+from src.config import get_config, Config, JEV_MODE_SHADOW
 from src.logging_config import setup_logging
 from src.gmail import GmailClient, get_gmail_clients, EmailMessage, message_text
 from src.email_filters import apply_privacy_filters
 from src.email_classifier import EmailClassifier, get_classifier, EmailClassification
+from src.jev_classifier import get_jev_classifier
+from src import jev_log
 from src.needs_review import (
     REASON_ALL_RETIRED,
     REASON_AMBIGUOUS,
@@ -62,7 +64,7 @@ from src.sheets import (
     STATUS_TECHNICAL,
     STATUS_WITHDRAWN,
 )
-from src.notifications import is_dream_company, notify_status_change
+from src.notifications import is_dream_company, notify_jev_flag, notify_status_change
 from src.email_archive import save_status_email
 from src.job_desc import commit_and_push_job_folder
 
@@ -155,6 +157,9 @@ class GmailChecker:
         self.reprocess = reprocess
         self.gmail_clients = get_gmail_clients()
         self.classifier = get_classifier(self.config)
+        # Jev observes only: its answers go to data/jev_shadow.json and nowhere else.
+        self.jev = (get_jev_classifier(self.config)
+                    if getattr(self.config, "jev_mode", None) == JEV_MODE_SHADOW else None)
         self.sheets_client = get_sheets_client()
 
         # Rows the user struck through to retire them. Refreshed once per run()
@@ -176,7 +181,72 @@ class GmailChecker:
             "stale_skipped": 0,
             "status_regression_blocked": 0,
             "stages_completed": 0,
+            "jev_agree": 0,
+            "jev_disagree": 0,
+            "jev_failed": 0,
+            "jev_recorded": 0,
+            "jev_alerted": 0,
         }
+
+    def _shadow_jev(self, email: EmailMessage, classification: EmailClassification) -> None:
+        """
+        Ask Jev about the same email and record the comparison. Changes nothing.
+
+        Called after the LLM has classified and before anything acts on it, so every
+        classified email is compared — including the "unknown" ones that stop right after,
+        which are where a silent miss would hide.
+        """
+        jev = self.jev.classify(email)
+        if jev is None:
+            self.stats["jev_failed"] += 1
+            return
+        self.stats["jev_agree" if jev.label == classification.category else "jev_disagree"] += 1
+        reasons = jev_log.reasons_to_record(
+            classification.category, jev, self.config.jev_log_confidence
+        )
+        logger.info(
+            f"Jev (shadow): {jev.label} @ {jev.confidence:.2f} vs LLM {classification.category}"
+            + (f" — recorded: {', '.join(reasons)}" if reasons else "")
+        )
+        if not reasons:
+            return
+        rows = self._jev_rows(email, classification)
+        if jev_log.record(
+            self.config.data_dir,
+            email=email,
+            llm_category=classification.category,
+            llm_confidence=classification.confidence,
+            jev=jev,
+            reasons=reasons,
+            rows=rows,
+        ):
+            self.stats["jev_recorded"] += 1
+            # Only on first recording: record() dedupes on message ID, so --reprocess
+            # walking the same mail again cannot repeat the ping.
+            threshold = getattr(self.config, "jev_alert_confidence", 0.9)
+            if jev_log.should_alert(classification.category, jev, threshold):
+                notify_jev_flag(
+                    jev_log.alert_message(email, classification.category, jev, rows))
+                self.stats["jev_alerted"] += 1
+
+    def _jev_rows(self, email: EmailMessage, classification: EmailClassification) -> List[int]:
+        """
+        The sheet rows a flagged email points to, so the alert and summary can name them.
+
+        Uses the same matcher a status email gets, read-only. An "unknown" email never
+        reaches the matcher on the normal path, which is exactly why a flagged one needs
+        this: without a row the user cannot find the job. Runs only for flagged emails
+        (about one a day), so the extra sheet reads cost nothing worth counting. A failure
+        here yields no row rather than losing the flag.
+        """
+        try:
+            outcome = self._find_matching_job(classification, email)
+        except Exception as e:
+            logger.warning(f"Row lookup for a Jev-flagged email failed: {e}")
+            return []
+        if outcome.matched:
+            return [outcome.job.row_number]
+        return [job.row_number for job in outcome.candidates]
 
     def _find_matching_job(
         self,
@@ -853,6 +923,9 @@ class GmailChecker:
         self.stats["classified"] += 1
         logger.info(f"AI extracted - Category: {classification.category}, Companies: {classification.company_candidates}, Position: {classification.position}")
 
+        if self.jev is not None:
+            self._shadow_jev(email, classification)
+
         # "unknown" is everything that fits no stage: candidate portal invites, profile
         # setups, event invites — and outright junk. It never writes a status, and as of
         # 2026-08-02 it no longer writes anything else either.
@@ -1021,6 +1094,12 @@ class GmailChecker:
         logger.info(f"  Status held (would regress): {self.stats['status_regression_blocked']}")
         logger.info(f"  Stages marked done: {self.stats['stages_completed']}")
         logger.info(f"  Jobs updated: {self.stats['updated']}")
+        if self.jev is not None:
+            logger.info(
+                f"  Jev shadow: agree {self.stats['jev_agree']}, "
+                f"disagree {self.stats['jev_disagree']}, failed {self.stats['jev_failed']}, "
+                f"recorded {self.stats['jev_recorded']}, alerted {self.stats['jev_alerted']}"
+            )
         logger.info("=" * 60)
 
         return self.stats

@@ -182,6 +182,23 @@ def notify_dream_company_job(company: str, position: str, url: str = "") -> bool
     return success
 
 
+def notify_jev_flag(message: str) -> bool:
+    """
+    Send a Jev review-mode alert (built by jev_log.alert_message) to the status channel.
+
+    Returns:
+        True if message was sent successfully
+    """
+    config = get_config()
+    if not config.discord.enabled:
+        return False
+
+    success = get_discord_sender().send_message(message)
+    if success:
+        logger.info("Discord alert sent for a Jev-flagged email")
+    return success
+
+
 def notify_status_change(company: str, position: str, new_status: str, url: str = "") -> bool:
     """
     Send Discord notification when a dream company job status changes.

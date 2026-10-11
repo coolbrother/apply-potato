@@ -22,6 +22,12 @@ ELIGIBILITY_MODES = (
     ELIGIBILITY_MODE_AI,
 )
 
+# Whether TypeSafe's Jev runs beside the email classifier. There is no mode in which it
+# decides: shadow records its answers next to the LLM's and changes nothing.
+JEV_MODE_OFF = "off"
+JEV_MODE_SHADOW = "shadow"
+JEV_MODES = (JEV_MODE_OFF, JEV_MODE_SHADOW)
+
 
 # OpenAI renamed the completion cap from max_tokens to max_completion_tokens for its
 # newer families. Sending the old name is a hard 400, not a warning, so switching
@@ -183,6 +189,15 @@ class Config:
 
     # Google Sheets job database (the tab ApplyPotato writes jobs to)
     jobs_sheet_tab: str
+
+    # Jev shadow classifier (TypeSafe). Defaulted so a Config built without them — every
+    # test fixture — is simply off. See JEV_MODE in .env.example.
+    typesafe_api_key: Optional[str] = None
+    jev_mode: str = JEV_MODE_OFF
+    jev_log_confidence: float = 0.8  # Jev answers below this are logged even on agreement
+    # LLM said unknown, Jev chose a status at least this sure: ping Discord right away.
+    # Above 1 turns the ping off; the daily summary still lists the flag.
+    jev_alert_confidence: float = 0.9
 
     # Paths
     base_dir: Path = field(default_factory=lambda: Path(__file__).parent.parent)
@@ -386,6 +401,20 @@ def load_config(env_path: Optional[Path] = None) -> Config:
         )
         eligibility_mode = ELIGIBILITY_MODE_CODE
 
+    # Jev shadow mode. Same leniency as ELIGIBILITY_MODE: a typo or a missing key warns and
+    # runs off, because Jev observes and nothing about the pipeline may depend on it.
+    typesafe_api_key = _get_optional("TYPESAFE_API_KEY").strip() or None
+    jev_mode = _get_optional("JEV_MODE", JEV_MODE_OFF).strip().lower()
+    if jev_mode not in JEV_MODES:
+        print(
+            f"WARNING: JEV_MODE must be one of {', '.join(JEV_MODES)}, "
+            f"got '{jev_mode}' — running '{JEV_MODE_OFF}'"
+        )
+        jev_mode = JEV_MODE_OFF
+    if jev_mode == JEV_MODE_SHADOW and not typesafe_api_key:
+        print("WARNING: JEV_MODE=shadow needs TYPESAFE_API_KEY — running 'off'")
+        jev_mode = JEV_MODE_OFF
+
     # Get API keys (only the selected provider is required)
     openai_api_key = _get_optional("OPENAI_API_KEY")
     gemini_api_key = _get_optional("GEMINI_API_KEY")
@@ -534,6 +563,10 @@ def load_config(env_path: Optional[Path] = None) -> Config:
         job_list_sheet_id=_get_optional("JOB_LIST_SHEET_ID") or None,
         job_list_sheet_tab=_get_optional("JOB_LIST_SHEET_TAB", "Sheet1"),
         jobs_sheet_tab=_get_optional("JOBS_SHEET_TAB", "Jobs"),
+        typesafe_api_key=typesafe_api_key,
+        jev_mode=jev_mode,
+        jev_log_confidence=_get_float("JEV_LOG_CONFIDENCE", 0.8),
+        jev_alert_confidence=_get_float("JEV_ALERT_CONFIDENCE", 0.9),
         base_dir=base_dir,
     )
 

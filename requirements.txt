@@ -12,6 +12,7 @@ google-auth-httplib2>=0.1.1
 # AI providers
 openai>=1.6.0
 google-genai>=1.0.0
+typesafe-sdk>=0.7.4  # Jev shadow classifier (JEV_MODE)
 
 # Scheduling
 apscheduler>=3.10.4
