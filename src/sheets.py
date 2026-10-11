@@ -281,6 +281,7 @@ EVENT_LABELS = {
     "stage_done": "Assessment Submitted",
     "offer": "Offer",
     "rejection": "Rejected",
+    "withdrawn": "Withdrawn",
 }
 
 # A finished stage is labelled for the stage, so a completed technical interview does

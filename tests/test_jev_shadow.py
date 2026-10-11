@@ -10,7 +10,6 @@ Usage:
 
 import json
 import logging
-import re
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -22,12 +21,13 @@ from scripts.daily_summary import MAX_JEV_DETAIL, _jev_block
 from src.config import JEV_MODE_OFF, JEV_MODE_SHADOW, load_config
 from src.email_classifier import EmailClassification
 from src.gmail import EmailMessage
-from src.jev_classifier import CATEGORIES, CRITERIA, JevClassifier, JevResult
+from src.email_categories import CATEGORIES, CATEGORIES_FILENAME, load_categories
+from src.jev_classifier import JevClassifier, JevResult, load_prompt
 from src import jev_log
 from src.sheets import COLUMNS
 from tests.mocks.mock_sheets import MockSheetsClient
 
-PROMPT = Path(__file__).parent.parent / "prompts" / "email_classification.txt"
+PROMPTS = Path(__file__).parent.parent / "prompts"
 
 
 # =============================================================================
@@ -61,8 +61,8 @@ def _sdk_response(choice="confirmation", confidence=0.91, probabilities=None):
                            usage=SimpleNamespace(input_tokens=812, output_tokens=0))
 
 
-def _classifier(key="ts-key"):
-    return JevClassifier(SimpleNamespace(typesafe_api_key=key))
+def _classifier(key="ts-key", prompts_dir=PROMPTS):
+    return JevClassifier(SimpleNamespace(typesafe_api_key=key, prompts_dir=prompts_dir))
 
 
 # =============================================================================
@@ -70,13 +70,6 @@ def _classifier(key="ts-key"):
 # =============================================================================
 
 class TestJevClassifier:
-    def test_criteria_match_the_llm_prompt_categories(self):
-        """Both models must be asked the same question, or a disagreement means nothing."""
-        prompt = PROMPT.read_text(encoding="utf-8")
-        listed = re.findall(r'^- "(\w+)":', prompt, flags=re.MULTILINE)
-        assert set(CATEGORIES) == set(listed)
-        assert len(CATEGORIES) == 8
-
     def test_maps_the_sdk_answer(self):
         jc = _classifier()
         client = MagicMock()
@@ -101,7 +94,17 @@ class TestJevClassifier:
 
         state, questions = client.system_one.call_args.args
         assert set(questions) == {"category"}
-        assert set(questions["category"].criteria) == set(CRITERIA)
+        instructions, criteria = load_prompt(PROMPTS)
+        assert questions["category"].instructions == instructions
+        assert dict(questions["category"].criteria) == criteria
+        assert tuple(criteria) == CATEGORIES
+
+    def test_broken_prompt_file_returns_none_and_never_raises(self, tmp_path):
+        (tmp_path / CATEGORIES_FILENAME).write_text("[guidance]\ng\n[oa]\nx\n", encoding="utf-8")
+        jc = _classifier(prompts_dir=tmp_path)
+        jc._client = MagicMock()
+        assert jc.classify(_email()) is None
+        jc._client.system_one.assert_not_called()
 
     def test_state_carries_the_whole_body(self):
         """No truncation: the trial compares Jev and the LLM on identical input."""
@@ -142,6 +145,22 @@ class TestJevClassifier:
     def test_status_probability_excludes_unknown(self):
         jev = _jev("unknown", 0.6, unknown=0.6, confirmation=0.3, oa=0.1)
         assert jev.status_probability() == pytest.approx(0.4)
+
+
+class TestJevPrompt:
+    """Jev reads only the shared categories file."""
+
+    def test_question_is_the_shared_guidance(self):
+        guidance, _ = load_categories(PROMPTS / CATEGORIES_FILENAME)
+        instructions, _ = load_prompt(PROMPTS)
+        assert instructions == guidance
+        assert instructions.startswith("A CUE COUNTS WHEREVER IT APPEARS")
+
+    def test_needs_nothing_but_the_shared_file(self, tmp_path):
+        (tmp_path / CATEGORIES_FILENAME).write_text(
+            (PROMPTS / CATEGORIES_FILENAME).read_text(encoding="utf-8"), encoding="utf-8")
+        instructions, criteria = load_prompt(tmp_path)  # no other file in the directory
+        assert tuple(criteria) == CATEGORIES
 
 
 # =============================================================================
@@ -268,7 +287,10 @@ def _classification(category: str) -> EmailClassification:
 def _run(tmp_path, jev_mode, jev_answers, alert_confidence=0.9, notify=None):
     """One checker run over a fixed batch; returns (stats, sheet rows, jev mock)."""
     sheets = MockSheetsClient()
-    sheets.add_job({"company": "Uber", "position": "SWE Intern"})
+    # A fixed Added Date: the mock otherwise stamps now(), and two runs straddling a
+    # second boundary would differ for a reason that has nothing to do with Jev.
+    sheets.add_job({"company": "Uber", "position": "SWE Intern",
+                    "added_date": "10/01/2026 08:00:00"})
 
     batch = [
         _email("confirmation", when=datetime(2026, 10, 1, 9, 0)),

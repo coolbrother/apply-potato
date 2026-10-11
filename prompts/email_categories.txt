@@ -1,0 +1,147 @@
+# Email categories — the single source of the classification rules.
+#
+# Read by src/email_categories.py and shared by both email classifiers:
+#   - the LLM (email_classification.txt) gets the category list and the rules below,
+#     around its own JSON format and extraction instructions;
+#   - Jev gets [guidance] as its question and each category's text as that label's
+#     description. It has no prompt file of its own; everything it reads is here.
+# Change a rule here and both models see it. Keeping one copy is the point: the two are
+# compared against each other, which only means something if they get the same rules.
+#
+# Format:
+#   [guidance]  rules that apply to every category.
+#   [label]     one per category of CATEGORIES in src/email_categories.py. The first
+#               paragraph is the one-line summary shown in the category list; everything
+#               after the first blank line is that category's detailed rules (optional).
+# The category list is always in CATEGORIES order. The rules are sent in the order the
+# sections appear here, and that order matters: stage_done comes first, as it always has.
+# With its rules placed after the invitation categories, nano read interview invitations
+# as completed stages.
+# Lines starting with '#' are comments and are not sent to either model.
+
+[stage_done]
+The candidate has FINISHED a stage — a receipt for work already done,
+not an invitation to do it. Set "stage_completed" to which one.
+
+- A RECEIPT for something already finished, not an invitation to start it. Judge this by
+  the TENSE, never by who sent it. Past tense about the applicant's own action is the
+  whole signal: "Assessment completed", "Thanks for taking", "Thank you for completing",
+  "You have completed", "Your submission has been received", "Thank you for submitting
+  your On-Demand Interview", "we've received your video interview".
+- Do not require a recognised platform. These arrive from whichever service the employer
+  happens to use, and there is always one more — CodeSignal, HackerRank, HireVue,
+  Codility and Modern Hire have all appeared, and the next will not be on any list. An
+  unfamiliar sender saying "thank you for submitting" is still a completion.
+- The company is usually named in the subject or body even when the sender is a platform.
+  Extract it as normal.
+- Set "stage_completed":
+    "OA"        a coding assessment, online test, game-based assessment, or a recorded
+                one-way video interview ("on-demand", "on-demand web/video", HireVue or
+                Modern Hire style). These are the first round, sent to everyone who
+                applies, so they belong with the assessment rather than the interviews.
+    "Phone"     a phone screen that has taken place
+    "Technical" a LIVE technical round with an interviewer — an onsite, a virtual
+                pairing session, a coding interview. Not a recording submitted to nobody.
+- An assessment INVITATION is "oa", never "stage_done", however friendly the wording.
+  "Reminder to complete your assessment" is still an invitation — nothing is finished.
+  Neither is an account or onboarding mail from the platform: "Welcome to Codility"
+  arrives when the account is created, not when the test is submitted. That is "unknown".
+- Results are not completions. "Assessment Results", an outcome, or anything that moves
+  the candidate forward or ends the process is "offer", "rejection", or the next stage.
+- A stage belongs to a JOB APPLICATION. The applicant is a student, and their courses
+  send receipts in the same past tense: "Successfully submitted to Homework 1",
+  "Problem Set 2 received", a graded assignment, a quiz. A submission to a course,
+  homework, problem set, lab, or exam — or anything whose subject carries a course code
+  such as "MATH4310" or "CS 4787" — is "unknown" with no company, never a completion,
+  whichever platform sent it (Gradescope, Canvas, a university CMS).
+
+[guidance]
+A CUE COUNTS WHEREVER IT APPEARS. The phrases listed under each category below are
+things to look for in the subject OR the body, and the body is the stronger evidence
+of the two. Many employers send every message under one generic subject — "Application
+Update", "Status change", "A message about your application" — while the body says
+plainly what happened. Read the body and classify on what it says; never fall back to
+"unknown" merely because the subject is uninformative.
+
+[confirmation]
+Application received/submitted confirmation
+
+- Subject or body contains: "application received", "thank you for applying",
+  "application submitted", "thank you for your interest in our open position"
+- A first acknowledgement that the application arrived is a confirmation even when the
+  subject is generic and even when the body adds that it is under review: "Thank you for
+  applying to X. We are reviewing your application" is a confirmation, not "unknown".
+  Being reviewed is what an application does after it is submitted; it is not a further
+  stage, and no stage has been reached beyond applying.
+- Usually automated, from ATS systems
+
+[oa]
+Online assessment invitation (HackerRank, CodeSignal, etc.)
+
+- Subject or body contains: "assessment", "coding challenge", "HackerRank", "CodeSignal"
+- Body contains link to assessment platform
+- KEY RULE: "oa" requires something to COMPLETE — a test, assessment, or coding
+  challenge the candidate is being asked to take, usually with a deadline. A link
+  alone is not enough. Being given access to a site is not an assessment.
+- A candidate portal, applicant account, or profile page is NOT an assessment
+  platform, however it is worded. This is NOT an "oa":
+    "IMC has invited you to the Software Engineer Internship Candidate Portal ...
+     It's packed with helpful resources to help you learn and prepare"
+  Nothing there asks the candidate to complete anything, so no stage has changed.
+  It is "unknown".
+- Usually has a deadline mentioned
+
+[phone]
+Phone screen or phone interview invitation
+
+- Subject or body contains: "phone screen", "phone interview", "recruiter call"
+- Body mentions scheduling a phone call
+- Usually 15-30 minutes, initial screening
+
+[technical]
+Technical interview invitation (onsite, virtual, coding round)
+
+- Subject or body contains: "technical interview", "onsite", "virtual onsite", "coding interview"
+- Body mentions technical rounds, coding problems, system design
+- Usually longer (1-4 hours), may be multiple rounds
+
+[offer]
+Job offer
+
+- Subject or body contains: "offer", "congratulations", "welcome to the team"
+- Body contains offer details (salary, start date, benefits)
+- Positive, celebratory tone
+
+[rejection]
+Application rejected
+
+- Subject or body contains: "unfortunately", "other candidates", "not moving forward"
+- Body is polite but negative
+- Usually short, generic
+- The EMPLOYER's decision. When the applicant withdrew, a reply acknowledging it is
+  "withdrawn", not "rejection", however regretful it sounds.
+
+[withdrawn]
+The applicant withdrew the application or declined to continue, and the employer
+acknowledges it
+
+- The APPLICANT's own decision, confirmed by the employer: "your application has been
+  withdrawn", "we've received your request to withdraw", "we're sorry to see you go",
+  "thank you for letting us know you are no longer interested", "we have cancelled your
+  interview at your request", or a reply to the applicant's own withdrawal email.
+- A reply to the applicant's withdrawal is "withdrawn" even when it is regretful or polite
+  — "unfortunately" or "sorry" there is about the applicant's choice, not a verdict.
+- NOT withdrawn when the employer made the decision: the position was cancelled, closed,
+  filled, put on hold, or the requisition "has been withdrawn" by the company, or they
+  are not moving forward. That is "rejection".
+- NOT withdrawn: an automatic reply or out-of-office message, even when its subject quotes
+  the applicant's withdrawal, and a bare calendar cancellation notice. Neither says what
+  happened to the application. Those are "unknown".
+- Be conservative. Withdrawn is final — no later email can change it — so use it only
+  when the email plainly says the applicant withdrew or declined.
+
+[unknown]
+Cannot determine, or none of the above fits. Mail that concerns a role
+but reports no change of stage — a candidate portal invitation, a profile to
+complete, an info session, a recruiter check-in — belongs here. Do NOT stretch a
+stage category to cover it; the caller decides what to do with "unknown".

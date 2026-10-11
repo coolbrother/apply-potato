@@ -7,23 +7,12 @@ CRITICAL INSTRUCTIONS:
 
 Classify the email into one of these categories:
 
-- "confirmation": Application received/submitted confirmation
-- "oa": Online assessment invitation (HackerRank, CodeSignal, etc.)
-- "phone": Phone screen or phone interview invitation
-- "technical": Technical interview invitation (onsite, virtual, coding round)
-- "stage_done": The candidate has FINISHED a stage — a receipt for work already done,
-  not an invitation to do it. Set "stage_completed" to which one.
-- "offer": Job offer
-- "rejection": Application rejected
-- "unknown": Cannot determine, or none of the above fits. Mail that concerns a role
-  but reports no change of stage — a candidate portal invitation, a profile to
-  complete, an info session, a recruiter check-in — belongs here. Do NOT stretch a
-  stage category to cover it; the caller decides what to do with "unknown".
+{category_list}
 
 Extract the following fields:
 
 {
-    "category": "confirmation | oa | phone | technical | stage_done | offer | rejection | unknown",
+    "category": "{category_names}",
     "stage_completed": "OA | Phone | Technical — only when category is stage_done, else null",
     "confidence": 0.0 to 1.0,
     "company_candidates": ["Company A", "Company B"],
@@ -37,89 +26,7 @@ Extract the following fields:
 
 CLASSIFICATION GUIDELINES:
 
-stage_done:
-- A RECEIPT for something already finished, not an invitation to start it. Judge this by
-  the TENSE, never by who sent it. Past tense about the applicant's own action is the
-  whole signal: "Assessment completed", "Thanks for taking", "Thank you for completing",
-  "You have completed", "Your submission has been received", "Thank you for submitting
-  your On-Demand Interview", "we've received your video interview".
-- Do not require a recognised platform. These arrive from whichever service the employer
-  happens to use, and there is always one more — CodeSignal, HackerRank, HireVue,
-  Codility and Modern Hire have all appeared, and the next will not be on any list. An
-  unfamiliar sender saying "thank you for submitting" is still a completion.
-- The company is usually named in the subject or body even when the sender is a platform.
-  Extract it as normal.
-- Set "stage_completed":
-    "OA"        a coding assessment, online test, game-based assessment, or a recorded
-                one-way video interview ("on-demand", "on-demand web/video", HireVue or
-                Modern Hire style). These are the first round, sent to everyone who
-                applies, so they belong with the assessment rather than the interviews.
-    "Phone"     a phone screen that has taken place
-    "Technical" a LIVE technical round with an interviewer — an onsite, a virtual
-                pairing session, a coding interview. Not a recording submitted to nobody.
-- An assessment INVITATION is "oa", never "stage_done", however friendly the wording.
-  "Reminder to complete your assessment" is still an invitation — nothing is finished.
-  Neither is an account or onboarding mail from the platform: "Welcome to Codility"
-  arrives when the account is created, not when the test is submitted. That is "unknown".
-- Results are not completions. "Assessment Results", an outcome, or anything that moves
-  the candidate forward or ends the process is "offer", "rejection", or the next stage.
-- A stage belongs to a JOB APPLICATION. The applicant is a student, and their courses
-  send receipts in the same past tense: "Successfully submitted to Homework 1",
-  "Problem Set 2 received", a graded assignment, a quiz. A submission to a course,
-  homework, problem set, lab, or exam — or anything whose subject carries a course code
-  such as "MATH4310" or "CS 4787" — is "unknown" with no company, never a completion,
-  whichever platform sent it (Gradescope, Canvas, a university CMS).
-
-A CUE COUNTS WHEREVER IT APPEARS. The phrases listed under each category below are
-things to look for in the subject OR the body, and the body is the stronger evidence
-of the two. Many employers send every message under one generic subject — "Application
-Update", "Status change", "A message about your application" — while the body says
-plainly what happened. Read the body and classify on what it says; never fall back to
-"unknown" merely because the subject is uninformative.
-
-confirmation:
-- Subject or body contains: "application received", "thank you for applying",
-  "application submitted", "thank you for your interest in our open position"
-- A first acknowledgement that the application arrived is a confirmation even when the
-  subject is generic and even when the body adds that it is under review: "Thank you for
-  applying to X. We are reviewing your application" is a confirmation, not "unknown".
-  Being reviewed is what an application does after it is submitted; it is not a further
-  stage, and no stage has been reached beyond applying.
-- Usually automated, from ATS systems
-
-oa:
-- Subject or body contains: "assessment", "coding challenge", "HackerRank", "CodeSignal"
-- Body contains link to assessment platform
-- KEY RULE: "oa" requires something to COMPLETE — a test, assessment, or coding
-  challenge the candidate is being asked to take, usually with a deadline. A link
-  alone is not enough. Being given access to a site is not an assessment.
-- A candidate portal, applicant account, or profile page is NOT an assessment
-  platform, however it is worded. This is NOT an "oa":
-    "IMC has invited you to the Software Engineer Internship Candidate Portal ...
-     It's packed with helpful resources to help you learn and prepare"
-  Nothing there asks the candidate to complete anything, so no stage has changed.
-  It is "unknown".
-- Usually has a deadline mentioned
-
-phone:
-- Subject or body contains: "phone screen", "phone interview", "recruiter call"
-- Body mentions scheduling a phone call
-- Usually 15-30 minutes, initial screening
-
-technical:
-- Subject or body contains: "technical interview", "onsite", "virtual onsite", "coding interview"
-- Body mentions technical rounds, coding problems, system design
-- Usually longer (1-4 hours), may be multiple rounds
-
-offer:
-- Subject or body contains: "offer", "congratulations", "welcome to the team"
-- Body contains offer details (salary, start date, benefits)
-- Positive, celebratory tone
-
-rejection:
-- Subject or body contains: "unfortunately", "other candidates", "not moving forward"
-- Body is polite but negative
-- Usually short, generic
+{category_rules}
 
 COMPANY NAME EXTRACTION (CRITICAL):
 - Return ALL company names found in the email as an array (company_candidates)

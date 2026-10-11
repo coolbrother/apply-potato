@@ -11,15 +11,22 @@ This module only produces Jev's answer. It decides nothing: check_gmail.py recor
 answer beside the LLM's (see jev_log.py) and carries on exactly as before.
 
 Jev cannot write text, so the company, position and dates still come from the LLM.
+
+Everything Jev is told comes from prompts/email_categories.txt, the file the LLM
+classifier's rules come from too: its [guidance] is Jev's question and each category's
+text is that label's description. One file, so the two models are judged on the same
+instructions.
 """
 
 import logging
 from dataclasses import dataclass, field
-from typing import Dict, Optional
+from pathlib import Path
+from typing import Dict, Optional, Tuple
 
 from typesafe_sdk import Choice, RetryPolicy, TypeSafeClient
 
 from .config import Config, get_config
+from .email_categories import CATEGORIES_FILENAME, jev_criteria, load_categories
 from .gmail import EmailMessage, body_as_text
 
 logger = logging.getLogger(__name__)
@@ -34,29 +41,19 @@ TIMEOUT_SECONDS = 3.0
 RETRY = RetryPolicy(max_retries=1)
 
 QUESTION = "category"
-INSTRUCTIONS = (
-    "This email arrived in a job applicant's inbox. Which of these best describes what it "
-    "says about one of the applicant's own job applications? Judge by what the body says "
-    "happened, not by the subject line alone."
-)
 
-# Same eight categories as prompts/email_classification.txt, in the same words where
-# possible, so a disagreement reflects the model rather than a different question.
-CRITERIA: Dict[str, str] = {
-    "confirmation": "Application received or submitted — a first acknowledgement that the "
-                    "application arrived, even if it adds that it is under review",
-    "oa": "Invitation to an online assessment (HackerRank, CodeSignal, etc.)",
-    "phone": "Invitation to a phone screen or phone interview",
-    "technical": "Invitation to a technical interview (onsite, virtual, coding round)",
-    "stage_done": "A receipt for a stage the applicant has already FINISHED — an assessment "
-                  "submitted or an interview completed — not an invitation to do one",
-    "offer": "A job offer",
-    "rejection": "The application was declined",
-    "unknown": "None of the above: not about one of the applicant's applications, or about "
-               "one but reporting no change of stage (portal or profile setup, info session, "
-               "recruiter check-in, newsletter, job alert, coursework)",
-}
-CATEGORIES = tuple(CRITERIA)
+
+def load_prompt(prompts_dir: Path) -> Tuple[str, Dict[str, str]]:
+    """
+    Jev's (instructions, criteria), both from the shared categories file: the guidance
+    is the question, and each category's summary and rules are its label's description.
+
+    Raises:
+        OSError: The categories file is missing.
+        ValueError: It is malformed (see load_categories).
+    """
+    guidance, categories = load_categories(prompts_dir / CATEGORIES_FILENAME)
+    return guidance, jev_criteria(categories)
 
 
 @dataclass
@@ -79,6 +76,16 @@ class JevClassifier:
     def __init__(self, config: Optional[Config] = None):
         self.config = config or get_config()
         self._client: Optional[TypeSafeClient] = None
+        self._question: Optional[Choice] = None
+
+    @property
+    def question(self) -> Choice:
+        """The category question, built from the shared categories file on first use."""
+        if self._question is None:
+            instructions, criteria = load_prompt(self.config.prompts_dir)
+            self._question = Choice(instructions=instructions, criteria=criteria)
+            logger.debug(f"Loaded Jev prompt from {CATEGORIES_FILENAME}")
+        return self._question
 
     def _get_client(self) -> TypeSafeClient:
         if self._client is None:
@@ -116,10 +123,14 @@ class JevClassifier:
         if not state["body"].strip():
             return None
         try:
-            result = self._get_client().system_one(
-                state,
-                {QUESTION: Choice(instructions=INSTRUCTIONS, criteria=CRITERIA)},
-            )
+            question = self.question
+        except (OSError, ValueError) as e:
+            # A broken prompt file is a configuration error, not a blip: logged as one,
+            # but still no reason to cost the LLM path its run.
+            logger.error(f"Jev prompt could not be loaded: {e}")
+            return None
+        try:
+            result = self._get_client().system_one(state, {QUESTION: question})
             answer = result.choices[QUESTION]
             return JevResult(
                 label=answer.choice,

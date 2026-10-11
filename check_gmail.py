@@ -80,6 +80,12 @@ CATEGORY_TO_STATUS = {
     "technical": "Technical",
     "offer": "Offer",
     "rejection": "Rejected",
+    # The employer acknowledging the user's own withdrawal. Withdrawn is final, so this
+    # is the one category whose write no later email can undo; the prompt asks for it
+    # only when the mail plainly says the applicant withdrew. It can arrive at any stage
+    # and is not on the STATUS_RANK ladder, so it is never held as a regression — except
+    # on a row already Rejected or Ghosted, which stays ended as it is.
+    "withdrawn": STATUS_WITHDRAWN,
 }
 
 # How far along the pipeline each status is. A row may move up this ladder but never
@@ -714,8 +720,8 @@ class GmailChecker:
                 self._event_date_value(classification, email),
             )
 
-        # For offer/rejection, add details to notes
-        if category in ("offer", "rejection"):
+        # For outcomes, add details to notes
+        if category in ("offer", "rejection", "withdrawn"):
             note_parts = [f"Email received: {email.date.strftime('%Y-%m-%d')}"]
             if classification.key_details:
                 note_parts.append(classification.key_details)

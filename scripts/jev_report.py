@@ -19,7 +19,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.config import get_config
-from src.jev_classifier import CATEGORIES
+from src.email_categories import CATEGORIES
 from src.jev_log import (
     REASON_DISAGREE,
     REASON_LOW_CONFIDENCE,

@@ -1,6 +1,7 @@
 """
 AI-powered email classification for ApplyPotato.
-Classifies job-related emails into categories (confirmation, OA, interview, offer, rejection).
+Classifies job-related emails into the categories of src/email_categories.py
+(confirmation, OA, interviews, completed stages, offer, rejection, withdrawn).
 """
 
 import json
@@ -16,6 +17,13 @@ from google.genai import types as genai_types
 from google.api_core import exceptions as google_exceptions
 
 from .config import Config, get_config
+from .email_categories import (
+    CATEGORIES,
+    CATEGORIES_FILENAME,
+    load_categories,
+    render_llm,
+    section_order,
+)
 from .sheets import COMPLETABLE_STAGES
 from .gmail import EmailMessage, body_as_text
 
@@ -97,12 +105,23 @@ class EmailClassifier:
 
     @property
     def prompt_template(self) -> str:
-        """Load and cache the classification prompt template."""
+        """
+        Load and cache the classification prompt template.
+
+        email_classification.txt holds what only this classifier needs — the JSON
+        format, company and date extraction, the email placeholders. The categories and
+        their rules come from email_categories.txt, shared with Jev, and are rendered in
+        here once, leaving only the per-email placeholders to fill.
+        """
         if self._prompt_template is None:
             prompt_path = self.config.prompts_dir / "email_classification.txt"
             if not prompt_path.exists():
                 raise FileNotFoundError(f"Prompt template not found: {prompt_path}")
-            self._prompt_template = prompt_path.read_text(encoding="utf-8")
+            categories_path = self.config.prompts_dir / CATEGORIES_FILENAME
+            guidance, categories = load_categories(categories_path)
+            self._prompt_template = render_llm(
+                prompt_path.read_text(encoding="utf-8"), guidance, categories,
+                section_order(categories_path))
             logger.debug(f"Loaded prompt template from {prompt_path}")
         return self._prompt_template
 
@@ -303,8 +322,7 @@ class EmailClassifier:
 
         # Validate required fields
         category = data.get("category", "unknown")
-        if category not in ("confirmation", "oa", "phone", "technical", "stage_done",
-                            "offer", "rejection", "unknown"):
+        if category not in CATEGORIES:
             logger.warning(f"Unknown category '{category}', treating as 'unknown'")
             category = "unknown"
 
