@@ -134,4 +134,6 @@ When creating a plan, update TASKS.md with the goals and the steps to finish tha
 
 Upon finishing a task, update TASKS.md and SESSION.md with what happened.
 
+TASKS.md holds only open work (IN PROGRESS / PLANNED): move a section to `docs/tasks-archive.md` once it is DONE or REVERTED. SESSION.md keeps about the last two weeks; move older entries to `docs/session-archive.md`. Newest first in all four.
+
 Never import in the middle of the file.
