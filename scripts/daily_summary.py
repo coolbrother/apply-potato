@@ -78,6 +78,10 @@ MAX_OUTCOME_DETAIL = 8
 # averaged about one per summary, so this is headroom for a busy day.
 MAX_JEV_DETAIL = 4
 
+# Withdrawn rows some summary has already named. A withdrawal is listed once, then
+# counted; see _withdrawn_block.
+WITHDRAWN_REPORTED_FILENAME = "withdrawn_reported.json"
+
 # Last Email Time is the email's own timestamp, not the moment check_gmail.py got to it.
 # A rejection that arrives at 8:57 and is processed at 9:05 is too late for the morning
 # summary and dated before the evening window opens, so it would be named by neither.
@@ -327,20 +331,36 @@ def _stage_block(progress: dict[str, dict], budget: int) -> str:
     return ""
 
 
-def _withdrawn_block(withdrawals: list, budget: int) -> str:
-    """
-    One line per withdrawn row — company, row, and the stage it was withdrawn at.
+def _load_reported(path: Path) -> set:
+    """Row numbers of withdrawals a summary has already named. Empty when missing."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return {int(r) for r in data} if isinstance(data, list) else set()
+    except (OSError, ValueError, TypeError):
+        return set()
 
-    Trimmed the same way as _stage_block, into an "…and N more" rather than costing the
-    whole summary its place under Discord's limit.
+
+def _save_reported(path: Path, rows: set) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(sorted(rows)), encoding="utf-8")
+
+
+def _withdrawn_block(new: list, others: int, budget: int) -> str:
     """
-    lines = [f"  • {job.company}, row {job.row_number} ({stage})"
-             for job, stage in withdrawals]
+    One line per newly withdrawn row — company, row, and the stage it was withdrawn at —
+    then a count of the withdrawals already reported in an earlier summary.
+
+    A withdrawal is news once. Listing all of them twice a day pushed the useful sections
+    out of Discord's limit for no new information; the season total is already above.
+    Trimmed the same way as _stage_block if the new ones alone do not fit.
+    """
+    lines = [f"  • {job.company}, row {job.row_number} ({stage})" for job, stage in new]
+    tail = [f"  • +{others} other withdrawn"] if others else []
     for shown in range(len(lines), -1, -1):
         block = lines[:shown]
         if shown < len(lines):
-            block.append(f"  • …and {len(lines) - shown} more")
-        text = "\n".join(block)
+            block.append(f"  • …and {len(lines) - shown} more new")
+        text = "\n".join(block + tail)
         if len(text) <= budget:
             return text
     return ""
@@ -690,10 +710,19 @@ def main() -> None:
     if stage_block:
         msg += f"\n\n📌 **Outstanding**\n{divider}\n{stage_block}"
 
-    # Withdrawals last: nothing is owed on them, so they get whatever room is left.
+    # Withdrawals last: nothing is owed on them, so they get whatever room is left. Only
+    # rows no earlier summary named are listed; the rest are a count. Withdrawn has no
+    # date column — the status is set by hand — so "new" means "not yet reported",
+    # tracked in a file and saved only after the summary is actually posted.
+    withdrawals = _withdrawals(jobs, struck_rows, target_season)
+    reported_path = Path(__file__).parent.parent / "data" / WITHDRAWN_REPORTED_FILENAME
+    reported = _load_reported(reported_path)
+    new_withdrawals = [(job, stage) for job, stage in withdrawals
+                       if job.row_number not in reported]
     withdrawn_header = f"\n\n🚪 **Withdrawn**\n{divider}\n"
     withdrawn_block = _withdrawn_block(
-        _withdrawals(jobs, struck_rows, target_season),
+        new_withdrawals,
+        others=len(withdrawals) - len(new_withdrawals),
         budget=DISCORD_LIMIT - len(msg) - len(withdrawn_header),
     )
     if withdrawn_block:
@@ -707,6 +736,8 @@ def main() -> None:
         resp = httpx.post(webhook_url, json={"content": msg}, timeout=10.0)
         resp.raise_for_status()
         logger.info("Pipeline summary sent.")
+        if new_withdrawals:
+            _save_reported(reported_path, reported | {job.row_number for job, _ in withdrawals})
         sys.exit(0)
     except Exception as e:
         logger.error(f"Error sending Discord message: {e}")

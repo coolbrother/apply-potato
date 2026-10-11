@@ -369,17 +369,35 @@ class TestWithdrawnSection:
 
     def test_renders_company_row_and_stage(self):
         found = [(self._job(1708), "OA")]
-        assert self.summary._withdrawn_block(found, budget=2000) == \
+        assert self.summary._withdrawn_block(found, others=0, budget=2000) == \
             "  • Co1708, row 1708 (OA)"
+
+    def test_new_ones_listed_and_earlier_ones_counted(self):
+        found = [(self._job(759), "OA")]
+        assert self.summary._withdrawn_block(found, others=10, budget=2000) == \
+            "  • Co759, row 759 (OA)\n  • +10 other withdrawn"
+
+    def test_only_earlier_ones_is_just_the_count(self):
+        assert self.summary._withdrawn_block([], others=11, budget=2000) == \
+            "  • +11 other withdrawn"
 
     def test_trims_to_the_budget(self):
         found = [(self._job(n), "OA") for n in range(1, 30)]
-        block = self.summary._withdrawn_block(found, budget=200)
+        block = self.summary._withdrawn_block(found, others=3, budget=200)
         assert len(block) <= 200
-        assert block.endswith("more")
+        assert "more new" in block
+        assert block.endswith("+3 other withdrawn")
 
     def test_nothing_withdrawn_renders_nothing(self):
-        assert self.summary._withdrawn_block([], budget=2000) == ""
+        assert self.summary._withdrawn_block([], others=0, budget=2000) == ""
+
+    def test_reported_rows_round_trip(self, tmp_path):
+        path = tmp_path / "withdrawn_reported.json"
+        assert self.summary._load_reported(path) == set()
+        self.summary._save_reported(path, {759, 704})
+        assert self.summary._load_reported(path) == {704, 759}
+        path.write_text("{corrupt", encoding="utf-8")
+        assert self.summary._load_reported(path) == set()
 
 
 class TestClassification:
