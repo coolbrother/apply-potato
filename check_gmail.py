@@ -562,6 +562,10 @@ class GmailChecker:
         moved row 317 from Rejected back to OA. A row that has ended stays ended until a
         person says otherwise.
 
+        An offer is the one exception to that floor: companies do send a rejection by
+        mistake and follow it with an offer, as Roblox did, and holding the row at
+        Rejected would bury the best news it could carry.
+
         Final statuses (Withdrawn) are checked before that exemption: the user ended the
         process, so even a rejection is held. The rest of the email is still recorded.
 
@@ -575,7 +579,7 @@ class GmailChecker:
             return False
 
         if (current or "").strip() in TERMINAL_STATUSES:
-            return True
+            return new_status != STATUS_OFFER
 
         current_rank = STATUS_RANK.get((current or "").strip())
         new_rank = STATUS_RANK.get(new_status)

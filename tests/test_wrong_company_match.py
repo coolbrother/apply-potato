@@ -283,8 +283,12 @@ class TestTerminalStatusFloor:
         """Row 317: this is the write that should never have happened."""
         assert is_regression_call(STATUS_REJECTED, STATUS_OA)
 
-    def test_rejected_row_refuses_an_offer(self):
-        assert is_regression_call(STATUS_REJECTED, STATUS_OFFER)
+    def test_offer_lifts_a_rejected_row(self):
+        """Roblox: a mistaken rejection followed by the real offer."""
+        assert not is_regression_call(STATUS_REJECTED, STATUS_OFFER)
+
+    def test_offer_lifts_a_ghosted_row(self):
+        assert not is_regression_call(STATUS_GHOSTED, STATUS_OFFER)
 
     def test_rejected_row_refuses_a_confirmation(self):
         assert is_regression_call(STATUS_REJECTED, STATUS_APPLIED)
