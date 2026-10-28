@@ -29,7 +29,8 @@ python check_gmail.py              # Run once
 python check_gmail.py --scheduled  # Daemon mode
 python check_gmail.py --reprocess  # Re-classify already-seen emails
 
-# Promotions tab (once a day at 17:00 via scheduled task; notify-only, never writes the sheet)
+# Promotions tab (once a day at 17:00 via scheduled task; notify-only, never writes the sheet;
+# PROMOTIONS_CHECK_ENABLED=false in .env turns it off)
 python scripts/check_promotions.py            # Post a Discord digest of Promotions mail about your applications
 python scripts/check_promotions.py --dry-run  # Print it instead; record nothing
 
@@ -113,6 +114,7 @@ Single `.env` file (see `.env.example`). `get_config()` is a module-level single
 - `data/seen_sources.json` — GitHub/newsletter source URLs with TTL
 - `data/processed_emails.json` — Gmail message IDs already handled
 - `data/promotions_seen_<account>.json` — Promotions message IDs already triaged (30-day TTL)
+- `data/promotions_pending_<account>.json` — Promotions emails the AI gave no answer for; the next scan reaches back to retry them
 - `data/extraction_failures.json` — URLs where AI extraction failed
 - `auth/` — OAuth tokens (`gmail_token.json`, `sheets_token.json`); auto-refreshed, git-ignored
 - `browser-profile/` — Playwright persistent profile for anti-detection continuity

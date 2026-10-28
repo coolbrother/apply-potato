@@ -654,12 +654,13 @@ class JobScraper:
                 f"sheet: {self.config.job_list_sheet_id}",
             ))
 
-        repo_list = [f"{r.owner_repo}@{r.branch}" for r in self.config.github_repos]
-        candidates.append((
-            "github",
-            lambda: self.github_parser.fetch_all_jobs(),
-            f"repos: {repo_list}",
-        ))
+        if self.config.github_repos:
+            repo_list = [f"{r.owner_repo}@{r.branch}" for r in self.config.github_repos]
+            candidates.append((
+                "github",
+                lambda: self.github_parser.fetch_all_jobs(),
+                f"repos: {repo_list}",
+            ))
 
         if self.config.newsletter_enabled and self.config.newsletter_sources:
             names = [s.name for s in self.config.newsletter_sources]

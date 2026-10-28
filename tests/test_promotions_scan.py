@@ -5,7 +5,8 @@ The Gmail checker never reads Promotions; this scan does, once a day, and report
 about the user's applications. Three buckets: marketing is ignored, an application
 email the tracker can place is reported with its row, and anything else the AI said
 "application" or "unsure" about - or could not read - is listed with subject and date
-for the user. That last rule came from the user: when in doubt, show it.
+for the user. That last rule came from the user: when in doubt, show it. An email the
+provider gave no answer for is neither: it is counted in one line and retried next run.
 
 No network, no AI: the classifier, Gmail client and row matcher are fakes.
 """
@@ -16,9 +17,10 @@ from types import SimpleNamespace
 
 import pytest
 
+import scripts.check_promotions as check_promotions
 from src.gmail import EmailMessage
 from src.promotions_scan import (
-    BUCKET_MATCHED, BUCKET_REVIEW, DISCORD_LIMIT, SEEN_TTL_DAYS,
+    BUCKET_MATCHED, BUCKET_RETRY, BUCKET_REVIEW, DISCORD_LIMIT, PENDING_FILENAME, SEEN_TTL_DAYS,
     Finding, SeenStore, Triage,
     build_message, decide, parse_triage, scan_account, to_classification,
 )
@@ -46,7 +48,7 @@ def _outcome(job=None, reason="", candidates=()):
 
 
 class _Classifier:
-    """Answers by subject substring; anything unlisted is marketing."""
+    """Answers by subject substring; anything unlisted is marketing. None means no answer."""
 
     def __init__(self, answers=None):
         self.answers = answers or {}
@@ -56,6 +58,8 @@ class _Classifier:
         self.prompts.append(prompt)
         for key, answer in self.answers.items():
             if key in prompt:
+                if answer is None:
+                    return None
                 return answer if isinstance(answer, str) else json.dumps(answer)
         return json.dumps({"verdict": "marketing", "confidence": 0.9, "company_candidates": []})
 
@@ -186,10 +190,12 @@ ACME = {"verdict": "application", "confidence": 0.9, "company_candidates": ["Acm
 UNSURE = {"verdict": "unsure", "confidence": 0.4, "company_candidates": ["Initech"], "summary": "Candidate account"}
 
 
-def _scan(emails, classifier, matcher, tmp_path, dry_run=False, since=SINCE, account="me@example.com"):
+def _scan(emails, classifier, matcher, tmp_path, dry_run=False, since=SINCE, account="me@example.com", now=NOW):
     client = _Client(emails, account=account)
-    store = SeenStore(tmp_path, account, now=NOW)
-    findings = scan_account(client, classifier, "T {subject} {sender} {date} {body}", matcher, since, store, dry_run=dry_run)
+    store = SeenStore(tmp_path, account, now=now)
+    pending = SeenStore(tmp_path, account, now=now, filename=PENDING_FILENAME)
+    findings = scan_account(client, classifier, "T {subject} {sender} {date} {body}", matcher, since, store,
+                            dry_run=dry_run, pending=pending)
     return client, store, findings
 
 
@@ -268,6 +274,51 @@ def test_unreadable_ai_answer_is_still_reported(tmp_path):
     assert "triaged" in findings[0].reason
 
 
+def _pending(tmp_path, now=NOW):
+    return SeenStore(tmp_path, "me@example.com", now=now, filename=PENDING_FILENAME)
+
+
+def test_no_answer_from_the_ai_is_retried_not_reviewed(tmp_path):
+    """An outage (e.g. out of credits) must not post every email for review or mark it seen."""
+    email = _email("Level up this month with Globex", hours_ago=3)
+    _, store, findings = _scan([email], _Classifier({"Globex": None}), lambda c, e: None, tmp_path)
+
+    assert [f.bucket for f in findings] == [BUCKET_RETRY]
+    assert email.message_id not in store
+    assert email.message_id in _pending(tmp_path)
+
+
+def test_next_run_reaches_back_for_a_pending_email_and_clears_it(tmp_path):
+    email = _email("One more thing for your Acme application", hours_ago=3)
+    _scan([email], _Classifier({"Acme application": None}), lambda c, e: None, tmp_path)
+
+    # A day later the email is 27h old, outside the normal 25h window.
+    later = NOW + timedelta(days=1)
+    classifier = _Classifier({"Acme application": ACME})
+    _, store, findings = _scan([email], classifier, lambda c, e: _outcome(job=_row()), tmp_path,
+                               since=later - timedelta(hours=25), now=later)
+
+    assert [f.bucket for f in findings] == [BUCKET_MATCHED]
+    assert email.message_id in store
+    assert email.message_id not in _pending(tmp_path, now=later)
+
+
+def test_pending_email_gone_from_promotions_is_dropped(tmp_path):
+    email = _email("Level up this month with Globex", hours_ago=3)
+    _scan([email], _Classifier({"Globex": None}), lambda c, e: None, tmp_path)
+
+    later = NOW + timedelta(days=1)
+    _scan([], _Classifier(), lambda c, e: None, tmp_path, since=later - timedelta(hours=25), now=later)
+
+    assert len(_pending(tmp_path, now=later)) == 0
+
+
+def test_dry_run_records_no_pending(tmp_path):
+    email = _email("Level up this month with Globex", hours_ago=3)
+    _scan([email], _Classifier({"Globex": None}), lambda c, e: None, tmp_path, dry_run=True)
+    assert not _pending(tmp_path).path.exists()
+
+
 def test_sensitive_mail_is_never_sent_to_the_ai(tmp_path):
     email = _email("Reset your password", body="Click here to reset your password now.")
     classifier = _Classifier({"password": ACME})
@@ -276,6 +327,23 @@ def test_sensitive_mail_is_never_sent_to_the_ai(tmp_path):
     assert findings == []
     assert classifier.prompts == []
     assert email.message_id in store
+
+
+# --- the switch --------------------------------------------------------------------
+
+
+def test_disabled_check_reads_no_mail_and_sends_nothing(monkeypatch):
+    def must_not_run(*args, **kwargs):
+        raise AssertionError("the disabled check touched Gmail or Discord")
+
+    monkeypatch.setattr(check_promotions, "get_config", lambda: SimpleNamespace(promotions_check_enabled=False))
+    monkeypatch.setattr(check_promotions, "setup_logging", lambda *a, **k: None)
+    monkeypatch.setattr(check_promotions, "get_gmail_clients", must_not_run)
+    monkeypatch.setattr(check_promotions, "GmailChecker", must_not_run)
+    monkeypatch.setattr(check_promotions, "DiscordSender", must_not_run)
+    monkeypatch.setattr("sys.argv", ["check_promotions.py"])
+
+    assert check_promotions.main() == 0
 
 
 # --- build_message -----------------------------------------------------------------
@@ -306,6 +374,15 @@ def test_message_lists_tied_rows():
     tied = [_row(41, "Vandelay"), _row(42, "Vandelay")]
     f = Finding(email=_email("Vandelay | Thanks for applying"), bucket=BUCKET_REVIEW, triage=Triage("application", 0.9, ["Vandelay"]), candidates=tied, reason="ambiguous")
     assert "rows 41, 42" in build_message([f], NOW)
+
+
+def test_retries_are_one_line_with_a_count_not_a_list():
+    findings = [Finding(email=_email(f"Sale number {i}", msg_id=f"m{i}"), bucket=BUCKET_RETRY) for i in range(8)]
+    msg = build_message(findings, NOW)
+
+    assert "8 email(s) skipped, will retry" in msg
+    assert "Sale number" not in msg
+    assert "Please review" not in msg
 
 
 def test_message_stays_under_the_discord_cap():

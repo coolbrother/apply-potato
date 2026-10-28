@@ -42,6 +42,33 @@ else:
 # job-boards.greenhouse.io/embed/job_app form.
 GREENHOUSE_IFRAME_SELECTOR = 'iframe[src*="boards.greenhouse.io"], iframe[src*="greenhouse.io"]'
 
+# Below this much body text, also read the page's iframes. Some career sites (Mercor)
+# are an empty shell around a full-window job-board iframe (Ashby), so the host page
+# alone is 0 chars and the row is marked "extraction error".
+EMBED_FALLBACK_CHARS = 200
+FRAME_TEXT_TIMEOUT_MS = 5000
+
+
+async def read_page_text(page: Page) -> str:
+    """Body text, plus the text of any iframes when the body alone is near-empty."""
+    content = await page.inner_text("body")
+    if len(content.strip()) >= EMBED_FALLBACK_CHARS:
+        return content
+
+    parts = [content]
+    for frame in page.frames:
+        if frame == page.main_frame:
+            continue
+        try:
+            text = await frame.inner_text("body", timeout=FRAME_TEXT_TIMEOUT_MS)
+        except Exception as e:
+            logger.debug(f"Could not read iframe {frame.url[:80]}: {e}")
+            continue
+        if text.strip():
+            logger.debug(f"Body text was {len(content.strip())} chars; read {len(text)} from iframe {frame.url[:80]}")
+            parts.append(text)
+    return "\n\n".join(p for p in parts if p.strip())
+
 
 class PlaywrightScraper:
     """
@@ -234,7 +261,7 @@ class PlaywrightScraper:
 
                 # Fall back to page body content
                 if not content:
-                    content = await self._page.inner_text("body")
+                    content = await read_page_text(self._page)
 
                 # Check for anti-scraping/403 error pages
                 content_lower = content.lower() if content else ""

@@ -13,7 +13,8 @@ Usage:
     python scripts/check_promotions.py --dry-run   # print instead of posting; record nothing
     python scripts/check_promotions.py --hours 72  # widen the window (e.g. after an outage)
 
-Scheduled daily at 17:00 by install_service.py.
+Scheduled daily at 17:00 by install_service.py. PROMOTIONS_CHECK_ENABLED=false in .env
+turns it off: the task still fires, and exits before reading any mail.
 """
 
 import argparse
@@ -28,7 +29,9 @@ from src.config import get_config
 from src.gmail import get_gmail_clients
 from src.logging_config import get_logger, setup_logging
 from src.notifications import DiscordSender
-from src.promotions_scan import SeenStore, build_message, load_prompt, scan_account
+from src.promotions_scan import (
+    BUCKET_MATCHED, BUCKET_RETRY, PENDING_FILENAME, SeenStore, build_message, load_prompt, scan_account,
+)
 
 
 def main() -> int:
@@ -41,6 +44,12 @@ def main() -> int:
     config = get_config()
     setup_logging("promotions", config, console=False)
     logger = get_logger(__name__)
+
+    if not config.promotions_check_enabled:
+        logger.info("Promotions check disabled (PROMOTIONS_CHECK_ENABLED=false); nothing read or sent.")
+        if args.dry_run:
+            print("(promotions check disabled)")
+        return 0
 
     if args.dry_run:
         try:
@@ -73,17 +82,20 @@ def main() -> int:
     findings = []
     for client in clients:
         store = SeenStore(config.data_dir, client.account, now=now)
+        pending = SeenStore(config.data_dir, client.account, now=now, filename=PENDING_FILENAME)
         try:
             findings.extend(scan_account(
                 client, checker.classifier, template, checker._find_matching_job,
-                since, store, dry_run=args.dry_run,
+                since, store, dry_run=args.dry_run, pending=pending,
             ))
         except Exception as e:
             logger.error(f"[{client.label}] Promotions scan failed: {e}")
 
     message = build_message(findings, now)
-    matched = sum(1 for f in findings if f.bucket == "matched")
-    logger.info(f"Findings: {len(findings)} ({matched} matched, {len(findings) - matched} to review)")
+    matched = sum(1 for f in findings if f.bucket == BUCKET_MATCHED)
+    retry = sum(1 for f in findings if f.bucket == BUCKET_RETRY)
+    logger.info(f"Findings: {len(findings)} ({matched} matched, {len(findings) - matched - retry} to review, "
+                f"{retry} awaiting retry)")
 
     if args.dry_run:
         print(message or "(nothing to report)")

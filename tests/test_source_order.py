@@ -18,9 +18,9 @@ import pytest
 from scrape_jobs import JobScraper
 
 
-def _config(job_list_sheet_id="", newsletters=()):
+def _config(job_list_sheet_id="", newsletters=(), repos=(("owner/repo", "dev"),)):
     return SimpleNamespace(
-        github_repos=[SimpleNamespace(owner_repo="owner/repo", branch="dev")],
+        github_repos=[SimpleNamespace(owner_repo=o, branch=b) for o, b in repos],
         job_list_sheet_id=job_list_sheet_id,
         newsletter_enabled=bool(newsletters),
         newsletter_sources=[SimpleNamespace(name=n) for n in newsletters],
@@ -57,6 +57,13 @@ def test_github_still_present_without_a_job_list():
     scraper = _scraper(_config(), job_list_parser=None)
 
     assert _names(scraper._build_sources()) == ["github"]
+
+
+def test_no_repos_means_no_github_source():
+    """GITHUB_REPOS is optional; left empty, the repo feed is simply not run."""
+    scraper = _scraper(_config(job_list_sheet_id="sheet123", repos=()), job_list_parser=object())
+
+    assert _names(scraper._build_sources()) == ["sheets"]
 
 
 def test_newsletter_stays_last():

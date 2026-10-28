@@ -14,6 +14,10 @@ This scan reads the tab once a day and sorts each message into one of three buck
            it - or the AI could not decide. The user asked for exactly this: when in
            doubt, send the subject and date and let them look.
 
+When the provider gives no answer at all (out of credits, down), the email is in none
+of these: it is counted in a single line of the digest and retried on the next run.
+Listing each one for review flooded Discord with marketing mail during an outage.
+
 It never writes to the sheet. Moving a reported email to Primary is the user's action,
 and the checker then handles the row on its next pass, with the staleness guard and the
 tie rules it already has. The main fetch stays as narrow as it was.
@@ -35,6 +39,7 @@ logger = logging.getLogger(__name__)
 
 PROMPT_FILENAME = "promotion_triage.txt"
 SEEN_FILENAME = "promotions_seen.json"
+PENDING_FILENAME = "promotions_pending.json"
 SEEN_TTL_DAYS = 30
 DISCORD_LIMIT = 2000
 
@@ -45,6 +50,7 @@ VERDICTS = (VERDICT_APPLICATION, VERDICT_UNSURE, VERDICT_MARKETING)
 
 BUCKET_MATCHED = "matched"
 BUCKET_REVIEW = "review"
+BUCKET_RETRY = "retry"
 
 # (classification, email) -> MatchOutcome. In production this is
 # GmailChecker._find_matching_job, so requisition ids, subsidiaries, ties and struck
@@ -72,6 +78,10 @@ class Finding:
     job: Optional[object] = None                    # JobRow when a row was tied to it
     candidates: list = field(default_factory=list)  # tied rows, when the match was ambiguous
     reason: str = ""                                # why it is in review
+
+
+class TriageUnavailable(Exception):
+    """The provider gave no answer at all - worth retrying, unlike an unreadable one."""
 
 
 # --- Triage ------------------------------------------------------------------------
@@ -155,14 +165,18 @@ def parse_triage(raw: str) -> Optional[Triage]:
 
 
 def triage_email(classifier: EmailClassifier, template: str, email: EmailMessage) -> Optional[Triage]:
-    """Ask the configured provider for a verdict; None when it gave nothing usable."""
+    """
+    Ask the configured provider for a verdict; None when the email or the answer cannot
+    be read. Raises TriageUnavailable when the provider did not answer, since asking
+    again later may well work.
+    """
     body = body_as_text(email)
     if not body.strip():
         logger.warning(f"Promotions email has no body: {email.subject}")
         return None
     raw = classifier.complete(build_prompt(template, email, body))
     if not raw:
-        return None
+        raise TriageUnavailable(email.subject)
     return parse_triage(raw)
 
 
@@ -221,12 +235,16 @@ class SeenStore:
     """
     Message ids already reported for one account, so the overlapping daily windows
     cannot report an email twice. Kept 30 days, which outlives any window by far.
+
+    With PENDING_FILENAME it holds the ids still waiting for a retry instead, stamped
+    with the email's date so the next run knows how far back to look.
     """
 
-    def __init__(self, data_dir: Path, account: str, now: Optional[datetime] = None):
+    def __init__(self, data_dir: Path, account: str, now: Optional[datetime] = None,
+                 filename: str = SEEN_FILENAME):
         slug = account_slug(account) if account else ""
-        stem, ext = SEEN_FILENAME.rsplit(".", 1)
-        self.path = data_dir / (f"{stem}_{slug}.{ext}" if slug else SEEN_FILENAME)
+        stem, ext = filename.rsplit(".", 1)
+        self.path = data_dir / (f"{stem}_{slug}.{ext}" if slug else filename)
         self._now = now or datetime.now()
         self._ids: Dict[str, str] = {}
         self._load()
@@ -263,8 +281,23 @@ class SeenStore:
     def __len__(self) -> int:
         return len(self._ids)
 
+    def ids(self) -> List[str]:
+        return list(self._ids)
+
     def add(self, msg_id: str, when: Optional[datetime] = None) -> None:
         self._ids[msg_id] = (when or self._now).isoformat(timespec="seconds")
+
+    def remove(self, msg_id: str) -> None:
+        self._ids.pop(msg_id, None)
+
+    def oldest(self) -> Optional[datetime]:
+        stamps = []
+        for stamp in self._ids.values():
+            try:
+                stamps.append(_local_naive(datetime.fromisoformat(stamp)))
+            except ValueError:
+                continue
+        return min(stamps) if stamps else None
 
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -289,14 +322,22 @@ def scan_account(
     since: datetime,
     store: SeenStore,
     dry_run: bool = False,
+    pending: Optional[SeenStore] = None,
 ) -> List[Finding]:
     """
     Every Promotions email on one account newer than `since`, sorted and decided.
 
-    An email is recorded as seen only once a decision was reached, so a provider
-    outage mid-run leaves the rest to be picked up tomorrow rather than lost.
+    An email is recorded as seen only once a decision was reached. One the provider
+    did not answer for goes into `pending` instead, and the next run reaches back to
+    the oldest pending email - the daily window alone would have moved past it.
     A dry run records nothing.
     """
+    oldest_pending = pending.oldest() if pending is not None else None
+    if oldest_pending is not None and oldest_pending < since:
+        logger.info(f"[{client.label}] {len(pending)} email(s) awaiting retry; "
+                    f"window widened to {oldest_pending:%Y-%m-%d %H:%M}")
+        since = oldest_pending
+
     # Gmail's after: is a calendar date; the hour is applied here.
     query = (
         f"in:inbox category:promotions "
@@ -306,6 +347,13 @@ def scan_account(
     emails = [e for e in emails if _local_naive(e.date) >= since]
     emails.sort(key=lambda e: e.date)
     logger.info(f"[{client.label}] {len(emails)} Promotions email(s) since {since:%Y-%m-%d %H:%M}")
+
+    if pending is not None and not dry_run:
+        # A pending email no longer in Promotions was moved or deleted; nothing to retry.
+        fetched = {e.message_id for e in emails}
+        for msg_id in pending.ids():
+            if msg_id not in fetched:
+                pending.remove(msg_id)
 
     findings: List[Finding] = []
     for email in emails:
@@ -320,7 +368,15 @@ def scan_account(
                 store.add(email.message_id, _local_naive(email.date))
             continue
 
-        triage = triage_email(classifier, template, email)
+        try:
+            triage = triage_email(classifier, template, email)
+        except TriageUnavailable:
+            logger.warning(f"[{client.label}] AI gave no answer, will retry: {email.subject}")
+            findings.append(Finding(email=email, bucket=BUCKET_RETRY))
+            if pending is not None and not dry_run:
+                pending.add(email.message_id, _local_naive(email.date))
+            continue
+
         outcome = None
         if triage is not None and triage.company_candidates:
             outcome = matcher(to_classification(triage), email)
@@ -336,9 +392,13 @@ def scan_account(
 
         if not dry_run:
             store.add(email.message_id, _local_naive(email.date))
+            if pending is not None:
+                pending.remove(email.message_id)
 
     if not dry_run:
         store.save()
+        if pending is not None:
+            pending.save()
     return findings
 
 
@@ -380,10 +440,12 @@ def build_message(findings: List[Finding], now: datetime) -> str:
     """
     The Discord digest, or "" when there is nothing to say. Trimmed from the end of the
     review list, then the matched list, to stay under Discord's hard 2000-character cap.
+    Emails the AI gave no answer for are one line with a count, never listed.
     """
     matched = [f for f in findings if f.bucket == BUCKET_MATCHED]
     review = [f for f in findings if f.bucket == BUCKET_REVIEW]
-    if not matched and not review:
+    retry = sum(1 for f in findings if f.bucket == BUCKET_RETRY)
+    if not matched and not review and not retry:
         return ""
 
     header = (
@@ -404,6 +466,8 @@ def build_message(findings: List[Finding], now: datetime) -> str:
             parts.extend(_render_review(f) for f in review[:n_review])
             if n_review < len(review):
                 parts.append(f"• …and {len(review) - n_review} more")
+        if retry:
+            parts.append(f"\n⚠️ AI triage unavailable — {retry} email(s) skipped, will retry on the next run.")
         return "\n".join(parts)
 
     n_matched, n_review = len(matched), len(review)

@@ -205,6 +205,7 @@ USER_TARGET_COMPANIES=Google,Meta,Apple  # Dream companies (for notifications)
 ```bash
 # GitHub repos to scrape (comma-separated)
 # Format: owner/repo@branch (branch defaults to "main" if not specified)
+# Optional: leave empty to skip GitHub and use only the Job List / newsletters
 GITHUB_REPOS=owner/repo@branch,another-owner/another-repo@branch
 ```
 

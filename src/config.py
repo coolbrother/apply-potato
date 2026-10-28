@@ -199,6 +199,10 @@ class Config:
     # Above 1 turns the ping off; the daily summary still lists the flag.
     jev_alert_confidence: float = 0.9
 
+    # Daily Promotions-tab check (scripts/check_promotions.py). Off makes the 17:00
+    # task exit without reading mail; the task itself stays installed.
+    promotions_check_enabled: bool = True
+
     # Paths
     base_dir: Path = field(default_factory=lambda: Path(__file__).parent.parent)
 
@@ -230,7 +234,7 @@ def _parse_github_repos(value: str) -> List[GitHubRepo]:
     """
     Parse GITHUB_REPOS with format: owner/repo@branch,owner/repo@branch
 
-    If no branch is specified, defaults to "main".
+    If no branch is specified, defaults to "main". Empty means no GitHub source.
     """
     repos = []
     for item in value.split(","):
@@ -534,7 +538,7 @@ def load_config(env_path: Optional[Path] = None) -> Config:
         gemini_model=_get_optional("GEMINI_MODEL", "gemini-2.0-flash"),
         openai_max_tokens=_get_optional_int("OPENAI_MAX_TOKENS"),
         gemini_max_output_tokens=_get_optional_int("GEMINI_MAX_OUTPUT_TOKENS"),
-        github_repos=_parse_github_repos(_get_required("GITHUB_REPOS")),
+        github_repos=_parse_github_repos(_get_optional("GITHUB_REPOS", "")),
         job_age_limit_days=min(_get_int("JOB_AGE_LIMIT_DAYS", 7), 30),  # Cap at 30 days max
         newsletter_sources=_parse_newsletter_sources(_get_optional("NEWSLETTER_SOURCES", "")),
         newsletter_lookback_days=_get_int("NEWSLETTER_LOOKBACK_DAYS", 7),
@@ -567,6 +571,7 @@ def load_config(env_path: Optional[Path] = None) -> Config:
         jev_mode=jev_mode,
         jev_log_confidence=_get_float("JEV_LOG_CONFIDENCE", 0.8),
         jev_alert_confidence=_get_float("JEV_ALERT_CONFIDENCE", 0.9),
+        promotions_check_enabled=_get_optional("PROMOTIONS_CHECK_ENABLED", "true").lower() in ("true", "1", "yes"),
         base_dir=base_dir,
     )
 
